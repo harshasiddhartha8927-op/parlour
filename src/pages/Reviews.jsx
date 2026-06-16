@@ -133,9 +133,9 @@ export default function Reviews() {
       <div className="page-shell">
         <div className="mx-auto mb-10 max-w-3xl text-center">
           <p className="text-sm font-bold uppercase text-gold">Customer Reviews</p>
-          <h1 className="section-title mt-2">Loved by Glam Clients</h1>
+          <h1 className="section-title mt-2">Loved by Dhanvika Clients</h1>
           <p className="mt-4 text-base leading-7 text-plum/70">
-            Read customer experiences and share your own visit to Glam Beauty Parlour.
+            Read customer experiences and share your own visit to Dhanvika Beauty Parlour.
           </p>
         </div>
 

@@ -1,7 +1,10 @@
 import { CalendarCheck, Clock, Sparkles } from "lucide-react";
 import { Link } from "react-router-dom";
+import { isAdminAuthenticated } from "../utils/bookingStorage";
 
 export default function ServiceCard({ service }) {
+  const isAdmin = isAdminAuthenticated();
+
   return (
     <article className="flex h-full flex-col rounded-lg border border-rose/10 bg-white p-5 shadow-salon transition hover:-translate-y-1 hover:border-rose/25">
       <div className="mb-5 flex items-start justify-between gap-4">
@@ -21,10 +24,12 @@ export default function ServiceCard({ service }) {
         <span>{service.duration}</span>
       </div>
 
-      <Link to={`/booking?service=${service.id}`} className="primary-button mt-6 w-full">
-        <CalendarCheck size={18} aria-hidden="true" />
-        Book Now
-      </Link>
+      {!isAdmin && (
+        <Link to={`/booking?service=${service.id}`} className="primary-button mt-6 w-full">
+          <CalendarCheck size={18} aria-hidden="true" />
+          Book Now
+        </Link>
+      )}
     </article>
   );
 }

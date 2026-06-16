@@ -2,9 +2,11 @@ import { CalendarCheck, ChevronRight, Heart, Scissors, Sparkles } from "lucide-r
 import { Link } from "react-router-dom";
 import ServiceCard from "../components/ServiceCard";
 import { HERO_IMAGE, SERVICES, STUDIO_IMAGE } from "../data/beautyData";
+import { isAdminAuthenticated } from "../utils/bookingStorage";
 
 export default function Home() {
   const featuredServices = SERVICES.slice(0, 4);
+  const isAdmin = isAdminAuthenticated();
 
   return (
     <>
@@ -23,16 +25,23 @@ export default function Home() {
                 Soft glam studio
               </p>
               <h1 className="mt-5 font-display text-5xl font-bold leading-tight sm:text-6xl lg:text-7xl">
-                Glam Beauty Parlour
+                Dhanvika Beauty Parlour
               </h1>
               <p className="mt-5 max-w-xl text-base leading-8 text-white/88 sm:text-lg">
                 A modern beauty parlour for hair, skin, makeup, nails, spa care, and confident everyday glow.
               </p>
               <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-                <Link to="/booking" className="primary-button bg-gold text-plum hover:bg-white">
-                  <CalendarCheck size={19} aria-hidden="true" />
-                  Book Appointment
-                </Link>
+                {isAdmin ? (
+                  <Link to="/admin" className="primary-button bg-gold text-plum hover:bg-white">
+                    <CalendarCheck size={19} aria-hidden="true" />
+                    Manage Bookings
+                  </Link>
+                ) : (
+                  <Link to="/booking" className="primary-button bg-gold text-plum hover:bg-white">
+                    <CalendarCheck size={19} aria-hidden="true" />
+                    Book Appointment
+                  </Link>
+                )}
                 <Link to="/services" className="secondary-button border-white/35 bg-white/10 text-white hover:bg-white hover:text-plum">
                   View Services
                   <ChevronRight size={18} aria-hidden="true" />
@@ -90,10 +99,17 @@ export default function Home() {
                 <p className="mt-3 text-sm font-bold text-plum">Event glam</p>
               </div>
             </div>
-            <Link to="/booking" className="primary-button mt-8">
-              <CalendarCheck size={19} aria-hidden="true" />
-              Reserve a Slot
-            </Link>
+            {isAdmin ? (
+              <Link to="/admin" className="primary-button mt-8">
+                <CalendarCheck size={19} aria-hidden="true" />
+                Manage Bookings
+              </Link>
+            ) : (
+              <Link to="/booking" className="primary-button mt-8">
+                <CalendarCheck size={19} aria-hidden="true" />
+                Reserve a Slot
+              </Link>
+            )}
           </div>
         </div>
       </section>

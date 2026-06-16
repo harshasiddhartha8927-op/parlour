@@ -2,7 +2,9 @@ import { useEffect } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import Navbar from "./components/Navbar";
 import AdminDashboard from "./components/AdminDashboard";
-import { isAdminAuthenticated } from "./utils/bookingStorage";
+import { isAdminAuthenticated, isCustomerAuthenticated } from "./utils/bookingStorage";
+import CustomerLogin from "./pages/CustomerLogin";
+import CustomerDashboard from "./pages/CustomerDashboard";
 import AdminLogin from "./pages/AdminLogin";
 import Booking from "./pages/Booking";
 import Home from "./pages/Home";
@@ -21,6 +23,10 @@ function ProtectedAdminRoute() {
   return isAdminAuthenticated() ? <AdminDashboard /> : <Navigate to="/admin-login" replace />;
 }
 
+function ProtectedCustomerRoute() {
+  return isCustomerAuthenticated() ? <CustomerDashboard /> : <Navigate to="/customer-login" replace />;
+}
+
 function AppLayout() {
   return (
     <div className="min-h-screen">
@@ -34,12 +40,15 @@ function AppLayout() {
           <Route path="/booking" element={<Booking />} />
           <Route path="/admin-login" element={<AdminLogin />} />
           <Route path="/admin" element={<ProtectedAdminRoute />} />
+          <Route path="/customer-login" element={<CustomerLogin />} />
+          <Route path="/customer-dashboard" element={<ProtectedCustomerRoute />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
       <footer className="border-t border-rose/10 bg-white/80 py-6">
+
         <div className="page-shell flex flex-col gap-2 text-sm text-plum/70 sm:flex-row sm:items-center sm:justify-between">
-          <span>Glam Beauty Parlour</span>
+          <span>Dhanvika Beauty Parlour</span>
           <span>Soft glam, expert care, beautiful appointments.</span>
         </div>
       </footer>

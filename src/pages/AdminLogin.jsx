@@ -27,12 +27,22 @@ export default function AdminLogin() {
     <section className="flex min-h-[calc(100vh-144px)] items-center bg-petal/45 py-12">
       <div className="page-shell">
         <div className="mx-auto max-w-md rounded-lg border border-rose/10 bg-white p-6 shadow-salon sm:p-8">
-          <div className="mb-7 text-center">
+          <div className="mb-6 text-center">
             <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-rose text-white shadow-salon">
               <ShieldCheck size={25} aria-hidden="true" />
             </span>
             <p className="mt-5 text-sm font-bold uppercase text-gold">Admin Login</p>
-            <h1 className="mt-2 font-display text-3xl font-bold text-plum">Glam Beauty Parlour</h1>
+            <h1 className="mt-2 font-display text-3xl font-bold text-plum">Dhanvika Beauty Parlour</h1>
+          </div>
+
+          <div className="mb-6 rounded-lg border border-gold/30 bg-gold/5 p-4 text-center">
+            <p className="text-xs font-bold uppercase tracking-wider text-gold">Admin Credentials</p>
+            <p className="mt-1 text-sm font-semibold text-plum">
+              Username: <span className="font-mono bg-white px-1.5 py-0.5 rounded border border-rose/10 font-bold select-all">admin</span>
+            </p>
+            <p className="mt-0.5 text-sm font-semibold text-plum">
+              Password: <span className="font-mono bg-white px-1.5 py-0.5 rounded border border-rose/10 font-bold select-all">admin123</span>
+            </p>
           </div>
 
           <form onSubmit={handleSubmit} className="grid gap-5">
