@@ -38,6 +38,7 @@ export default function CustomerDashboard() {
   const navigate = useNavigate();
   const [session, setSession] = useState(() => getCustomerSession());
   const [bookings, setBookings] = useState([]);
+  const [usingFirebase, setUsingFirebase] = useState(isFirebaseConfigured);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -57,7 +58,10 @@ export default function CustomerDashboard() {
     const userEmail = session.email.toLowerCase();
 
     const loadLocalBookings = () => {
-      const allLocal = getBookings();
+      const allLocal = getBookings().map((b) => ({
+        ...b,
+        id: b.id || b.appointmentId,
+      }));
       const matched = allLocal.filter(
         (b) => b.email && b.email.toLowerCase() === userEmail
       );
@@ -87,7 +91,6 @@ export default function CustomerDashboard() {
         const list = snapshot.docs.map((doc) => {
           const data = doc.data();
           return {
-            id: doc.id,
             customerName: data.customerName || "",
             phone: data.phone || "",
             email: data.email || "",
@@ -97,6 +100,8 @@ export default function CustomerDashboard() {
             status: data.bookingStatus || data.status || "Confirmed",
             servicePrice: data.price || data.servicePrice || "Rs. 499",
             ...data,
+            id: data.id || data.appointmentId || doc.id,
+            docId: doc.id,
           };
         });
 
@@ -111,10 +116,12 @@ export default function CustomerDashboard() {
         });
 
         setBookings(list);
+        setUsingFirebase(true);
         setLoading(false);
       },
       (error) => {
         console.error("Firestore onSnapshot error in CustomerDashboard, falling back to local storage:", error);
+        setUsingFirebase(false);
         loadLocalBookings();
       }
     );
@@ -132,17 +139,27 @@ export default function CustomerDashboard() {
     return bookings.filter((b) => b.status === "Cancelled");
   }, [bookings]);
 
-  const handleCancel = async (bookingId) => {
+  const handleCancel = async (booking) => {
+    const bookingId = booking.id || booking.appointmentId;
+    const docId = booking.docId || bookingId;
     if (window.confirm("Are you sure you want to cancel this appointment?")) {
       try {
         cancelBooking(bookingId);
 
-        if (isFirebaseConfigured) {
-          const docRef = doc(db, "bookings", bookingId);
-          await updateDoc(docRef, {
-            bookingStatus: "Cancelled",
-            status: "Cancelled", // compatibility fallback
-          });
+        if (usingFirebase) {
+          try {
+            const docRef = doc(db, "bookings", docId);
+            await updateDoc(docRef, {
+              bookingStatus: "Cancelled",
+              status: "Cancelled", // compatibility fallback
+            });
+          } catch (dbErr) {
+            console.warn("Firestore cancel failed, updating local state only:", dbErr);
+            const updated = bookings.map((b) =>
+              b.id === bookingId ? { ...b, bookingStatus: "Cancelled", status: "Cancelled" } : b
+            );
+            setBookings(updated);
+          }
         } else {
           const updated = bookings.map((b) =>
             b.id === bookingId ? { ...b, bookingStatus: "Cancelled", status: "Cancelled" } : b
@@ -284,7 +301,7 @@ export default function CustomerDashboard() {
                               <button
                                 type="button"
                                 className="inline-flex items-center gap-1.5 rounded-full border border-red-200 bg-white px-3 py-1.5 text-xs font-bold text-red-600 transition hover:bg-red-50"
-                                onClick={() => handleCancel(booking.id)}
+                                onClick={() => handleCancel(booking)}
                               >
                                 <XCircle size={14} />
                                 Cancel

@@ -6,8 +6,8 @@ export default function ServiceCard({ service }) {
   const isAdmin = isAdminAuthenticated();
 
   return (
-    <article className="flex h-full flex-col rounded-lg border border-rose/10 bg-white p-5 shadow-salon transition hover:-translate-y-1 hover:border-rose/25">
-      <div className="mb-5 flex items-start justify-between gap-4">
+    <article className="flex h-full flex-col rounded-lg border border-rose/10 bg-white shadow-salon transition hover:-translate-y-1 hover:border-rose/25 overflow-hidden">
+      <div className="p-5 pb-0 flex items-start justify-between gap-4">
         <span className="flex h-11 w-11 items-center justify-center rounded-lg bg-petal text-rose">
           <Sparkles size={20} aria-hidden="true" />
         </span>
@@ -16,20 +16,26 @@ export default function ServiceCard({ service }) {
         </span>
       </div>
 
-      <h3 className="font-display text-2xl font-bold text-plum">{service.name}</h3>
-      <p className="mt-3 flex-1 text-sm leading-6 text-plum/70">{service.description}</p>
+      <div className="p-5 flex-1 flex flex-col justify-between">
+        <div>
+          <h3 className="font-display text-lg font-bold text-plum leading-snug">{service.name}</h3>
+          <p className="mt-2 text-xs leading-relaxed text-plum/70">{service.description}</p>
+        </div>
 
-      <div className="mt-5 flex items-center gap-2 text-sm font-semibold text-plum/70">
-        <Clock size={16} aria-hidden="true" />
-        <span>{service.duration}</span>
+        <div>
+          <div className="mt-4 flex items-center gap-2 text-xs font-semibold text-plum/70 border-t border-rose/5 pt-3">
+            <Clock size={14} aria-hidden="true" />
+            <span>{service.duration}</span>
+          </div>
+
+          {!isAdmin && (
+            <Link to={`/booking?service=${service.id}`} className="primary-button mt-4 w-full text-xs py-2 h-auto flex items-center justify-center gap-1.5">
+              <CalendarCheck size={15} aria-hidden="true" />
+              Book Now
+            </Link>
+          )}
+        </div>
       </div>
-
-      {!isAdmin && (
-        <Link to={`/booking?service=${service.id}`} className="primary-button mt-6 w-full">
-          <CalendarCheck size={18} aria-hidden="true" />
-          Book Now
-        </Link>
-      )}
     </article>
   );
 }

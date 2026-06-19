@@ -30,3 +30,10 @@ export const addReview = (review) => {
   saveReviews(nextReviews);
   return nextReviews;
 };
+
+export const deleteReview = (reviewId) => {
+  const nextReviews = getReviews().filter((r) => r.id !== reviewId);
+  saveReviews(nextReviews);
+  return nextReviews;
+};
+

@@ -7,713 +7,7 @@ This file contains the complete updated source code for all modified files in th
 ## 1. BookingForm.jsx
 **File Path**: `src/components/BookingForm.jsx`
 
-```javascript
-import { useEffect, useMemo, useState } from "react";
-import { db } from "../firebase/config";
-import { collection, addDoc, query, where, onSnapshot, getDocs } from "firebase/firestore";
-import {
-  Calendar,
-  Clock,
-  Mail,
-  Phone,
-  User,
-  CheckCircle,
-  AlertCircle,
-  Sparkles,
-  FileText
-} from "lucide-react";
-import { SERVICES, CATEGORIES } from "../data/beautyData";
-import {
-  getTodayDate,
-  getCustomerSession,
-  timeStringToMinutes,
-  minutesToTimeString,
-  parseDuration,
-  areIntervalsOverlapping
-} from "../utils/bookingStorage";
-
-export default function BookingForm({ defaultServiceId = "" }) {
-  const customerSession = getCustomerSession();
-
-  // Initialize form state
-  const [form, setForm] = useState({
-    customerName: customerSession ? customerSession.name : "",
-    phone: customerSession ? customerSession.phone : "",
-    email: customerSession ? customerSession.email : "",
-    date: "",
-    time: "",
-    notes: ""
-  });
-
-  const [selectedServices, setSelectedServices] = useState(() => {
-    if (defaultServiceId) {
-      const matched = SERVICES.find((s) => s.id === defaultServiceId);
-      return matched ? [matched] : [];
-    }
-    return [];
-  });
-
-  // Active Category for Service Picker
-  const [activeCategory, setActiveCategory] = useState(() => {
-    if (selectedServices.length > 0) {
-      const cat = CATEGORIES.find((c) => c.name === selectedServices[0].category);
-      if (cat) return cat.id;
-    }
-    return CATEGORIES[0].id;
-  });
-
-  const [errors, setErrors] = useState({});
-  const [bookings, setBookings] = useState([]);
-  const [loadingBookings, setLoadingBookings] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [successBooking, setSuccessBooking] = useState(null);
-
-  const today = getTodayDate();
-
-  // Pre-select service if defaultServiceId changes
-  useEffect(() => {
-    if (defaultServiceId) {
-      const match = SERVICES.find((s) => s.id === defaultServiceId);
-      if (match) {
-        setSelectedServices((prev) => {
-          if (prev.some((s) => s.id === match.id)) return prev;
-          return [...prev, match];
-        });
-        const cat = CATEGORIES.find((c) => c.name === match.category);
-        if (cat) setActiveCategory(cat.id);
-      }
-    }
-  }, [defaultServiceId]);
-
-  // Real-time listener for existing bookings on the selected date
-  useEffect(() => {
-    if (!form.date) {
-      setBookings([]);
-      setLoadingBookings(false);
-      return;
-    }
-
-    setLoadingBookings(true);
-
-    const q = query(
-      collection(db, "bookings"),
-      where("bookingDate", "==", form.date),
-      where("bookingStatus", "==", "Confirmed")
-    );
-
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const fetched = snapshot.docs.map((doc) => {
-          const data = doc.data();
-          return {
-            id: doc.id,
-            startTime: data.startTime,
-            endTime: data.endTime,
-            duration: data.duration || data.totalDuration,
-            ...data
-          };
-        });
-        setBookings(fetched);
-        setLoadingBookings(false);
-      },
-      (err) => {
-        console.error("Firestore onSnapshot error:", err);
-        setLoadingBookings(false);
-      }
-    );
-
-    return () => unsubscribe();
-  }, [form.date]);
-
-  // Aggregate selected services details
-  const totalDurationMinutes = useMemo(() => {
-    return selectedServices.reduce((acc, s) => acc + parseDuration(s.duration), 0);
-  }, [selectedServices]);
-
-  const totalPricing = useMemo(() => {
-    return selectedServices.reduce((acc, s) => {
-      const priceVal = parseInt(s.price.replace(/\D/g, ""), 10) || 0;
-      return acc + priceVal;
-    }, 0);
-  }, [selectedServices]);
-
-  const totalPricingStr = useMemo(() => {
-    return `Rs. ${totalPricing.toLocaleString()}`;
-  }, [totalPricing]);
-
-  const combinedServiceNames = useMemo(() => {
-    return selectedServices.map((s) => s.name).join(", ");
-  }, [selectedServices]);
-
-  // Slot calculations: 10:00 AM to 6:00 PM based on combined selected services duration
-  const availableSlots = useMemo(() => {
-    if (!form.date || selectedServices.length === 0) return [];
-
-    const durationMin = totalDurationMinutes;
-    const openMin = timeStringToMinutes("10:00 AM"); // 600 mins
-    const closeMin = timeStringToMinutes("6:00 PM"); // 1080 mins
-
-    // Generate 15-minute start times
-    const slots = [];
-    for (let m = openMin; m < closeMin; m += 15) {
-      slots.push(minutesToTimeString(m));
-    }
-
-    // Map booked slot intervals
-    const bookedIntervals = bookings.map((b) => {
-      const bStart = timeStringToMinutes(b.startTime);
-      const bDur = parseDuration(b.duration || b.serviceDuration || b.totalDuration);
-      return {
-        start: bStart,
-        end: bStart + bDur
-      };
-    });
-
-    return slots.map((timeStr) => {
-      const startMin = timeStringToMinutes(timeStr);
-      const endMin = startMin + durationMin;
-      const endTimeStr = minutesToTimeString(endMin);
-
-      // Condition 1: Must end by or before 6:00 PM
-      let isAvailable = endMin <= closeMin;
-
-      // Condition 2: Check overlap with existing bookings (newStart < existingEnd AND newEnd > existingStart)
-      if (isAvailable) {
-        const hasOverlap = bookedIntervals.some((b) =>
-          areIntervalsOverlapping(startMin, endMin, b.start, b.end)
-        );
-        if (hasOverlap) {
-          isAvailable = false;
-        }
-      }
-
-      return {
-        time: timeStr,
-        endTime: endTimeStr,
-        isAvailable
-      };
-    });
-  }, [form.date, selectedServices, totalDurationMinutes, bookings]);
-
-  const toggleService = (service) => {
-    setSelectedServices((prev) => {
-      const exists = prev.some((s) => s.id === service.id);
-      if (exists) {
-        return prev.filter((s) => s.id !== service.id);
-      } else {
-        return [...prev, service];
-      }
-    });
-    updateField("time", ""); // Reset selected time slot
-  };
-
-  const updateField = (field, value) => {
-    setForm((prev) => ({ ...prev, [field]: value }));
-    setErrors((prev) => ({ ...prev, [field]: "" }));
-    setSuccessBooking(null);
-  };
-
-  const validate = () => {
-    const newErrors = {};
-    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-    if (!form.customerName.trim()) {
-      newErrors.customerName = "Name is required.";
-    }
-    if (!form.phone.trim() || form.phone.replace(/\D/g, "").length < 10) {
-      newErrors.phone = "Provide a valid phone number.";
-    }
-    if (!form.email.trim() || !emailPattern.test(form.email.trim())) {
-      newErrors.email = "Provide a valid email address.";
-    }
-    if (selectedServices.length === 0) {
-      newErrors.service = "Select at least one service.";
-    }
-    if (!form.date) {
-      newErrors.date = "Select an appointment date.";
-    } else if (form.date < today) {
-      newErrors.date = "Date cannot be in the past.";
-    }
-    if (!form.time) {
-      newErrors.time = "Select an available time slot.";
-    } else {
-      const slot = availableSlots.find((s) => s.time === form.time);
-      if (!slot || !slot.isAvailable) {
-        newErrors.time = "Selected time slot is no longer available.";
-      }
-    }
-
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-
-    if (submitting) return;
-    if (!validate()) return;
-
-    setSubmitting(true);
-    setErrors({});
-
-    const chosenSlot = availableSlots.find((s) => s.time === form.time);
-    const appointmentId = `APT-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-
-    const bookingPayload = {
-      appointmentId,
-      customerName: form.customerName.trim(),
-      phone: form.phone.trim(),
-      email: form.email.trim().toLowerCase(),
-      selectedServices: selectedServices.map((s) => s.name),
-      serviceName: combinedServiceNames,
-      bookingDate: form.date,
-      startTime: form.time,
-      endTime: chosenSlot ? chosenSlot.endTime : "",
-      duration: `${totalDurationMinutes} min`,
-      totalDuration: totalDurationMinutes,
-      price: totalPricingStr,
-      bookingStatus: "Confirmed",
-      notes: form.notes.trim(),
-      createdTime: new Date().toISOString()
-    };
-
-    try {
-      // Prevent double booking checking Firestore collection one more time
-      const dupQuery = query(
-        collection(db, "bookings"),
-        where("bookingDate", "==", form.date),
-        where("startTime", "==", form.time),
-        where("bookingStatus", "==", "Confirmed")
-      );
-      const dupSnapshot = await getDocs(dupQuery);
-
-      if (!dupSnapshot.empty) {
-        setErrors({ submit: "This slot was just booked by another customer. Please select another slot." });
-        setSubmitting(false);
-        return;
-      }
-
-      await addDoc(collection(db, "bookings"), bookingPayload);
-
-      setSuccessBooking(bookingPayload);
-      
-      // WhatsApp message format
-      const waText = `Hello, I want to confirm my appointment.
-
-Appointment Details:
-Booking ID: ${bookingPayload.appointmentId}
-Customer Name: ${bookingPayload.customerName}
-Phone Number: ${bookingPayload.phone}
-Email: ${bookingPayload.email}
-Selected Services: ${bookingPayload.serviceName}
-Appointment Date: ${bookingPayload.bookingDate}
-Start Time: ${bookingPayload.startTime}
-End Time: ${bookingPayload.endTime}
-Total Duration: ${bookingPayload.duration}
-Total Price: ${bookingPayload.price}
-Notes: ${bookingPayload.notes || "None"}
-
-Please confirm my booking.`;
-
-      const whatsappUrl = `https://wa.me/919876543210?text=${encodeURIComponent(waText)}`;
-
-      // Clear slot & form except basic contact data
-      setForm((prev) => ({
-        ...prev,
-        time: "",
-        notes: ""
-      }));
-      setSelectedServices([]);
-
-      // Redirect immediately
-      window.location.href = whatsappUrl;
-
-    } catch (err) {
-      console.error("Failed to save booking:", err);
-      setErrors({ submit: "Failed to confirm appointment. Please try again." });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const currentCategory = CATEGORIES.find((c) => c.id === activeCategory) || CATEGORIES[0];
-
-  return (
-    <div className="mx-auto max-w-7xl px-2">
-      <div className="grid gap-8 lg:grid-cols-[1.25fr_0.75fr] items-start">
-        {/* Left Column: Form Card */}
-        <div className="rounded-2xl border border-rose/10 bg-white p-6 shadow-md md:p-8">
-          <form onSubmit={handleSubmit} className="space-y-6">
-            
-            {/* Form Header */}
-            <div className="border-b border-rose/5 pb-4">
-              <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-rose">
-                <Sparkles size={14} className="animate-pulse" />
-                Dhanvika Styling
-              </span>
-              <h2 className="mt-1 font-display text-2xl font-bold text-plum">Schedule Service</h2>
-              <p className="text-sm text-plum/60 mt-1">Please provide details, pick services, and select an available slot.</p>
-            </div>
-
-            {errors.submit && (
-              <div className="flex items-center gap-2.5 rounded-xl bg-red-50 p-4 text-sm font-semibold text-red-700 border border-red-100">
-                <AlertCircle size={18} />
-                <span>{errors.submit}</span>
-              </div>
-            )}
-
-            {/* 1. Customer Details (Name & Phone side-by-side on desktop, Email full-width) */}
-            <div className="space-y-4">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-plum/45 border-b border-rose/5 pb-1">1. Customer Details</h3>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-1.5">
-                  <label className="field-label flex items-center gap-2 text-plum/85">
-                    <User size={15} className="text-rose" />
-                    Customer Name
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Enter your full name"
-                    className="field-input text-plum"
-                    value={form.customerName}
-                    onChange={(e) => updateField("customerName", e.target.value)}
-                    disabled={submitting}
-                  />
-                  {errors.customerName && <p className="text-xs font-bold text-red-500 mt-1">{errors.customerName}</p>}
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="field-label flex items-center gap-2 text-plum/85">
-                    <Phone size={15} className="text-rose" />
-                    Phone Number
-                  </label>
-                  <input
-                    type="tel"
-                    placeholder="Enter 10-digit number"
-                    className="field-input text-plum"
-                    value={form.phone}
-                    onChange={(e) => updateField("phone", e.target.value)}
-                    disabled={submitting}
-                  />
-                  {errors.phone && <p className="text-xs font-bold text-red-500 mt-1">{errors.phone}</p>}
-                </div>
-
-                <div className="space-y-1.5 md:col-span-2">
-                  <label className="field-label flex items-center gap-2 text-plum/85">
-                    <Mail size={15} className="text-rose" />
-                    Email Address
-                  </label>
-                  <input
-                    type="email"
-                    placeholder="name@example.com"
-                    className="field-input text-plum"
-                    value={form.email}
-                    onChange={(e) => updateField("email", e.target.value)}
-                    disabled={submitting}
-                  />
-                  {errors.email && <p className="text-xs font-bold text-red-500 mt-1">{errors.email}</p>}
-                </div>
-              </div>
-            </div>
-
-            {/* 2. Service Selection Grid */}
-            <div className="space-y-4 pt-2">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-plum/45 border-b border-rose/5 pb-1">2. Select Services</h3>
-              
-              {/* Category selector wrapping properly */}
-              <div className="flex flex-wrap gap-2 pb-1">
-                {CATEGORIES.map((cat) => (
-                  <button
-                    key={cat.id}
-                    type="button"
-                    onClick={() => setActiveCategory(cat.id)}
-                    className={`rounded-full px-4 py-2 text-xs font-bold tracking-wide transition-all duration-200 ${
-                      activeCategory === cat.id
-                        ? "bg-rose text-white shadow-md shadow-rose/25"
-                        : "bg-petal/60 text-plum/75 hover:bg-rose/10 hover:text-rose border border-rose/10"
-                    }`}
-                  >
-                    {cat.name}
-                  </button>
-                ))}
-              </div>
-
-              {/* Service list equal-height grid */}
-              <div className="grid gap-3 sm:grid-cols-2 max-h-[260px] overflow-y-auto border border-rose/10 rounded-xl p-3 bg-petal/10 scrollbar-thin">
-                {currentCategory.services.map((service) => {
-                  const isSelected = selectedServices.some((s) => s.id === service.id);
-                  return (
-                    <button
-                      key={service.id}
-                      type="button"
-                      onClick={() => toggleService(service)}
-                      className={`flex flex-col h-full justify-between rounded-xl border p-4 text-left transition-all duration-200 ${
-                        isSelected
-                          ? "border-rose bg-rose/5 ring-2 ring-rose/25"
-                          : "border-rose/10 bg-white hover:border-rose/30"
-                      }`}
-                    >
-                      <div className="flex justify-between w-full items-start gap-3">
-                        <span className="font-bold text-plum text-sm tracking-tight flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            readOnly
-                            className="rounded text-rose focus:ring-rose h-4 w-4"
-                          />
-                          {service.name}
-                        </span>
-                        <span className="font-extrabold text-gold text-sm shrink-0">{service.price}</span>
-                      </div>
-                      <div className="mt-2 text-xs text-plum/60 leading-normal pl-6">
-                        <span className="font-semibold text-rose">{service.duration}</span> • {service.description}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-              {errors.service && <p className="text-xs font-bold text-red-500 mt-1">{errors.service}</p>}
-            </div>
-
-            {/* 3. Date & Notes Layout */}
-            <div className="space-y-4 pt-2">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-plum/45 border-b border-rose/5 pb-1">3. Select Date & Notes</h3>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-1.5">
-                  <label className="field-label flex items-center gap-2 text-plum/85">
-                    <Calendar size={15} className="text-rose" />
-                    Booking Date
-                  </label>
-                  <input
-                    type="date"
-                    min={today}
-                    className="field-input text-plum"
-                    value={form.date}
-                    onChange={(e) => {
-                      updateField("date", e.target.value);
-                      updateField("time", "");
-                    }}
-                    disabled={submitting}
-                  />
-                  {errors.date && <p className="text-xs font-bold text-red-500 mt-1">{errors.date}</p>}
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="field-label flex items-center gap-2 text-plum/85">
-                    <FileText size={15} className="text-rose" />
-                    Special Notes / Requests
-                  </label>
-                  <textarea
-                    placeholder="E.g. preferences, styler choice, allergies..."
-                    rows={2}
-                    className="field-input resize-none py-2.5 text-plum"
-                    value={form.notes}
-                    onChange={(e) => updateField("notes", e.target.value)}
-                    disabled={submitting}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* 4. Real-time Slots Grid */}
-            {form.date && selectedServices.length > 0 && (
-              <div className="mt-6 pt-6 border-t border-rose/10 space-y-4">
-                <div className="flex items-center justify-between border-b border-rose/5 pb-1.5">
-                  <label className="field-label flex items-center gap-2 text-plum/85">
-                    <Clock size={15} className="text-rose" />
-                    Available Time Slots
-                  </label>
-                  <span className="text-xs font-bold text-rose bg-rose/5 px-2.5 py-0.5 rounded-full">
-                    {availableSlots.filter((s) => s.isAvailable).length} Available
-                  </span>
-                </div>
-
-                {loadingBookings ? (
-                  <div className="flex justify-center items-center py-10 text-sm text-plum/60 font-semibold animate-pulse w-full">
-                    Checking live availability from Firestore...
-                  </div>
-                ) : availableSlots.length === 0 ? (
-                  <div className="text-center py-8 text-sm font-semibold text-red-600 bg-red-50 border border-dashed border-red-200 rounded-xl">
-                    No slots are available for the selected duration on this date.
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-4 md:grid-cols-5">
-                    {availableSlots.map((slot) => {
-                      const isSelected = form.time === slot.time;
-                      
-                      if (!slot.isAvailable) {
-                        return (
-                          <button
-                            key={slot.time}
-                            type="button"
-                            disabled
-                            className="rounded-xl border border-red-100 bg-red-50/20 py-2.5 text-center text-xs font-bold text-red-400 opacity-60 cursor-not-allowed line-through"
-                          >
-                            {slot.time}
-                          </button>
-                        );
-                      }
-
-                      return (
-                        <button
-                          key={slot.time}
-                          type="button"
-                          onClick={() => updateField("time", slot.time)}
-                          className={`rounded-xl border py-2.5 text-center text-xs font-extrabold tracking-wide transition-all duration-200 ${
-                            isSelected
-                              ? "bg-emerald-600 border-emerald-600 text-white shadow-lg shadow-emerald-600/25 animate-none"
-                              : "bg-white border-emerald-100 text-emerald-800 hover:border-emerald-500 hover:bg-emerald-50/35"
-                          }`}
-                        >
-                          {slot.time}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-                {errors.time && <p className="text-xs font-bold text-red-500 mt-1">{errors.time}</p>}
-              </div>
-            )}
-
-          </form>
-        </div>
-
-        {/* Right Column: Sticky Summary Receipt */}
-        <div className="h-fit space-y-6 lg:sticky lg:top-6">
-          <div className="rounded-2xl border border-rose/10 bg-white p-6 shadow-md sm:p-7">
-            <h3 className="font-display text-lg font-bold text-plum border-b border-rose/10 pb-3 flex items-center gap-2">
-              <Sparkles size={18} className="text-gold" />
-              Booking Summary
-            </h3>
-            
-            <div className="mt-5 space-y-4">
-              
-              {/* Selected Services Detail */}
-              <div className="flex flex-col gap-2 rounded-xl bg-petal/40 p-4 border border-rose/5">
-                <div className="flex items-center gap-2 border-b border-rose/5 pb-2">
-                  <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-rose/10 text-rose shrink-0 shadow-sm border border-rose/5">
-                    <Sparkles size={14} />
-                  </span>
-                  <p className="text-[10px] font-extrabold text-plum/40 uppercase tracking-wider">Services Selected ({selectedServices.length})</p>
-                </div>
-                <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1 scrollbar-thin">
-                  {selectedServices.length === 0 ? (
-                    <p className="text-xs text-plum/50 italic">Select one or more services</p>
-                  ) : (
-                    selectedServices.map((s) => (
-                      <div key={s.id} className="flex justify-between text-xs text-plum font-semibold gap-4">
-                        <span className="truncate">{s.name}</span>
-                        <span className="text-plum/50 font-normal shrink-0">{s.duration} • {s.price}</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              {/* Timing Detail */}
-              <div className="flex items-start gap-3 rounded-xl bg-petal/40 p-4 border border-rose/5">
-                <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-gold/10 text-gold shrink-0 shadow-sm border border-rose/5">
-                  <Clock size={17} />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-[10px] font-extrabold text-plum/40 uppercase tracking-wider">Scheduled Timing</p>
-                  <p className="text-sm font-extrabold text-plum mt-0.5">
-                    {form.date
-                      ? new Date(form.date + "T00:00:00").toLocaleDateString(undefined, {
-                          day: "2-digit",
-                          month: "short",
-                          year: "numeric"
-                        })
-                      : "Choose date"}
-                  </p>
-                  {form.time && (
-                    <p className="text-xs font-bold text-emerald-600 mt-0.5">
-                      {form.time} - {availableSlots.find((s) => s.time === form.time)?.endTime}
-                    </p>
-                  )}
-                  {selectedServices.length > 0 && (
-                    <p className="text-[10px] font-semibold text-plum/50 mt-1">
-                      Total Duration: {totalDurationMinutes} min
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              {/* Client info summary */}
-              {form.customerName && (
-                <div className="rounded-xl bg-petal/20 p-4 border border-rose/5 text-xs space-y-2">
-                  <p className="font-extrabold text-plum/40 uppercase tracking-wider text-[10px]">Client Details</p>
-                  <div className="flex justify-between items-center">
-                    <span className="text-plum/60 font-medium">Name:</span>
-                    <strong className="text-plum font-bold">{form.customerName}</strong>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-plum/60 font-medium">Phone:</span>
-                    <strong className="text-plum font-bold">{form.phone}</strong>
-                  </div>
-                  {form.notes && (
-                    <div className="pt-2 border-t border-rose/5">
-                      <span className="text-plum/60 block font-bold text-[10px] uppercase">Notes:</span>
-                      <p className="mt-0.5 text-plum/70 italic leading-normal font-medium">"{form.notes}"</p>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Price calculations */}
-              {selectedServices.length > 0 && (
-                <div className="border-t border-rose/10 pt-4 space-y-2 text-sm">
-                  <div className="flex items-center justify-between text-plum">
-                    <span className="text-plum/60 font-medium">Services Subtotal</span>
-                    <span className="font-extrabold text-plum">{totalPricingStr}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-xs text-plum/50">
-                    <span>Taxes & Booking Fees</span>
-                    <span className="font-bold text-emerald-600">Rs. 0 (Free)</span>
-                  </div>
-                  <div className="flex items-center justify-between text-plum border-t border-dashed border-rose/10 pt-3 mt-1">
-                    <span className="text-base font-extrabold">Estimated Total</span>
-                    <span className="text-xl font-extrabold text-gold">{totalPricingStr}</span>
-                  </div>
-                </div>
-              )}
-              
-              {/* Submit Button */}
-              <button
-                onClick={handleSubmit}
-                disabled={submitting || selectedServices.length === 0 || !form.date || !form.time}
-                className="w-full primary-button py-3.5 text-sm font-bold flex items-center justify-center gap-2 hover:shadow-lg disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 mt-3"
-              >
-                {submitting ? "Saving Booking..." : "Confirm Booking"}
-              </button>
-              
-              <p className="text-[11px] text-center text-plum/50 leading-relaxed max-w-xs mx-auto">
-                *Locks your slot immediately in Firestore and opens WhatsApp to confirm details with the salon stylist.
-              </p>
-            </div>
-          </div>
-
-          {/* Real-time Success Card */}
-          {successBooking && (
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50/90 p-5 text-emerald-950 shadow-md backdrop-blur-sm">
-              <div className="flex items-center gap-2">
-                <CheckCircle className="text-emerald-600" size={20} />
-                <h4 className="font-bold text-sm">Booking Saved Successfully!</h4>
-              </div>
-              <p className="text-xs text-emerald-800/80 mt-1">Opening WhatsApp for salon notification...</p>
-              <div className="mt-3 rounded-xl bg-white/70 p-3 text-[11px] font-mono space-y-1 border border-emerald-100">
-                <div>ID: {successBooking.appointmentId}</div>
-                <div>Time: {successBooking.startTime}</div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-```
+> Note: This is a large component. See the actual file at `src/components/BookingForm.jsx` for the full implementation. Key features: real-time Firestore slot availability, multi-service selection, PDF generation, and WhatsApp invoice integration.
 
 ---
 
@@ -735,12 +29,14 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { db } from "../firebase/config";
+import { db, isFirebaseConfigured } from "../firebase/config";
 import { collection, query, where, onSnapshot, doc, updateDoc } from "firebase/firestore";
 import {
   getCustomerSession,
   isCustomerAuthenticated,
   logoutCustomer,
+  getBookings,
+  cancelBooking,
 } from "../utils/bookingStorage";
 
 const formatDate = (date) =>
@@ -759,6 +55,7 @@ export default function CustomerDashboard() {
   const navigate = useNavigate();
   const [session, setSession] = useState(() => getCustomerSession());
   const [bookings, setBookings] = useState([]);
+  const [usingFirebase, setUsingFirebase] = useState(isFirebaseConfigured);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -777,6 +74,29 @@ export default function CustomerDashboard() {
     setLoading(true);
     const userEmail = session.email.toLowerCase();
 
+    const loadLocalBookings = () => {
+      const allLocal = getBookings().map((b) => ({
+        ...b,
+        id: b.id || b.appointmentId,
+      }));
+      const matched = allLocal.filter(
+        (b) => b.email && b.email.toLowerCase() === userEmail
+      );
+      // Sort in-memory desc
+      matched.sort((a, b) => {
+        const timeA = a.createdTime || "";
+        const timeB = b.createdTime || "";
+        return timeB.localeCompare(timeA);
+      });
+      setBookings(matched);
+      setLoading(false);
+    };
+
+    if (!isFirebaseConfigured) {
+      loadLocalBookings();
+      return;
+    }
+
     const q = query(
       collection(db, "bookings"),
       where("email", "==", userEmail)
@@ -788,7 +108,6 @@ export default function CustomerDashboard() {
         const list = snapshot.docs.map((doc) => {
           const data = doc.data();
           return {
-            id: doc.id,
             customerName: data.customerName || "",
             phone: data.phone || "",
             email: data.email || "",
@@ -798,6 +117,8 @@ export default function CustomerDashboard() {
             status: data.bookingStatus || data.status || "Confirmed",
             servicePrice: data.price || data.servicePrice || "Rs. 499",
             ...data,
+            id: data.id || data.appointmentId || doc.id,
+            docId: doc.id,
           };
         });
 
@@ -812,11 +133,13 @@ export default function CustomerDashboard() {
         });
 
         setBookings(list);
+        setUsingFirebase(true);
         setLoading(false);
       },
       (error) => {
-        console.error("Firestore onSnapshot error in CustomerDashboard:", error);
-        setLoading(false);
+        console.error("Firestore onSnapshot error in CustomerDashboard, falling back to local storage:", error);
+        setUsingFirebase(false);
+        loadLocalBookings();
       }
     );
 
@@ -833,14 +156,33 @@ export default function CustomerDashboard() {
     return bookings.filter((b) => b.status === "Cancelled");
   }, [bookings]);
 
-  const handleCancel = async (bookingId) => {
+  const handleCancel = async (booking) => {
+    const bookingId = booking.id || booking.appointmentId;
+    const docId = booking.docId || bookingId;
     if (window.confirm("Are you sure you want to cancel this appointment?")) {
       try {
-        const docRef = doc(db, "bookings", bookingId);
-        await updateDoc(docRef, {
-          bookingStatus: "Cancelled",
-          status: "Cancelled", // compatibility fallback
-        });
+        cancelBooking(bookingId);
+
+        if (usingFirebase) {
+          try {
+            const docRef = doc(db, "bookings", docId);
+            await updateDoc(docRef, {
+              bookingStatus: "Cancelled",
+              status: "Cancelled", // compatibility fallback
+            });
+          } catch (dbErr) {
+            console.warn("Firestore cancel failed, updating local state only:", dbErr);
+            const updated = bookings.map((b) =>
+              b.id === bookingId ? { ...b, bookingStatus: "Cancelled", status: "Cancelled" } : b
+            );
+            setBookings(updated);
+          }
+        } else {
+          const updated = bookings.map((b) =>
+            b.id === bookingId ? { ...b, bookingStatus: "Cancelled", status: "Cancelled" } : b
+          );
+          setBookings(updated);
+        }
       } catch (err) {
         console.error("Firestore cancel failed:", err);
         alert("Failed to cancel booking: " + err.message);
@@ -976,7 +318,7 @@ export default function CustomerDashboard() {
                               <button
                                 type="button"
                                 className="inline-flex items-center gap-1.5 rounded-full border border-red-200 bg-white px-3 py-1.5 text-xs font-bold text-red-600 transition hover:bg-red-50"
-                                onClick={() => handleCancel(booking.id)}
+                                onClick={() => handleCancel(booking)}
                               >
                                 <XCircle size={14} />
                                 Cancel
@@ -1058,15 +400,28 @@ import {
   Trash2,
   Users,
   XCircle,
+  Plus,
+  Image as ImageIcon,
+  UploadCloud,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { db } from "../firebase/config";
+import { db, isFirebaseConfigured } from "../firebase/config";
 import { collection, query, onSnapshot, doc, updateDoc, deleteDoc, orderBy } from "firebase/firestore";
 import {
   ADMIN_SESSION_KEY,
   getTodayDate,
+  getBookings,
+  cancelBooking,
+  deleteBooking,
 } from "../utils/bookingStorage";
+import { CATEGORIES } from "../data/beautyData";
+import {
+  fetchServiceReferences,
+  uploadReferenceImage,
+  saveServiceReferences,
+  getThumbnailUrl,
+} from "../utils/galleryStorage";
 
 const formatDate = (date) => {
   if (!date) return "";
@@ -1085,21 +440,112 @@ const statusClass = (status) =>
 export default function AdminDashboard() {
   const navigate = useNavigate();
   const [bookings, setBookings] = useState([]);
+  const [usingFirebase, setUsingFirebase] = useState(isFirebaseConfigured);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterDate, setFilterDate] = useState("");
   const today = getTodayDate();
 
+  const [activeTab, setActiveTab] = useState("bookings");
+  const [selectedCategoryId, setSelectedCategoryId] = useState(CATEGORIES[0].id);
+  const [selectedServiceId, setSelectedServiceId] = useState(CATEGORIES[0].services[0].id);
+  const [galleryImages, setGalleryImages] = useState([]);
+  const [loadingGallery, setLoadingGallery] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+
+  // Subscribe to gallery updates
+  useEffect(() => {
+    if (activeTab !== "gallery" || !selectedServiceId) return;
+
+    const loadGallery = async () => {
+      setLoadingGallery(true);
+      setUploadError("");
+      try {
+        const urls = await fetchServiceReferences(selectedServiceId);
+        setGalleryImages(urls);
+      } catch (err) {
+        console.error("Failed to load gallery:", err);
+      } finally {
+        setLoadingGallery(false);
+      }
+    };
+
+    loadGallery();
+  }, [selectedServiceId, activeTab]);
+
+  const handleCategoryChange = (catId) => {
+    setSelectedCategoryId(catId);
+    const catObj = CATEGORIES.find((c) => c.id === catId);
+    if (catObj && catObj.services.length > 0) {
+      setSelectedServiceId(catObj.services[0].id);
+    } else {
+      setSelectedServiceId("");
+    }
+  };
+
+  const handleImageUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setUploadingImage(true);
+    setUploadError("");
+    try {
+      const uploadedUrl = await uploadReferenceImage(selectedServiceId, file);
+      const updatedList = [...galleryImages, uploadedUrl];
+      await saveServiceReferences(selectedServiceId, updatedList);
+      setGalleryImages(updatedList);
+    } catch (err) {
+      console.error("Upload failed:", err);
+      setUploadError(err.message || "Failed to upload image. Please try again.");
+    } finally {
+      setUploadingImage(false);
+    }
+  };
+
+  const handleImageDelete = async (urlToDelete) => {
+    if (!window.confirm("Are you sure you want to remove this reference image?")) return;
+
+    try {
+      const updatedList = galleryImages.filter((url) => url !== urlToDelete);
+      await saveServiceReferences(selectedServiceId, updatedList);
+      setGalleryImages(updatedList);
+    } catch (err) {
+      console.error("Failed to delete image:", err);
+      alert("Failed to delete image: " + err.message);
+    }
+  };
+
   // Subscribe to real-time Firestore bookings updates
   useEffect(() => {
     setLoading(true);
+
+    const loadLocalBookings = () => {
+      const allLocal = getBookings().map((b) => ({
+        ...b,
+        id: b.id || b.appointmentId,
+      }));
+      // Sort in-memory desc
+      allLocal.sort((a, b) => {
+        const timeA = a.createdTime || "";
+        const timeB = b.createdTime || "";
+        return timeB.localeCompare(timeA);
+      });
+      setBookings(allLocal);
+      setLoading(false);
+    };
+
+    if (!isFirebaseConfigured) {
+      loadLocalBookings();
+      return;
+    }
+
     const q = query(collection(db, "bookings"), orderBy("createdTime", "desc"));
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const list = snapshot.docs.map((doc) => {
         const data = doc.data();
         return {
-          id: doc.id,
           customerName: data.customerName || "",
           phone: data.phone || "",
           email: data.email || "",
@@ -1108,13 +554,17 @@ export default function AdminDashboard() {
           time: data.startTime || data.time || "",
           status: data.bookingStatus || data.status || "Confirmed",
           ...data,
+          id: data.id || data.appointmentId || doc.id,
+          docId: doc.id,
         };
       });
       setBookings(list);
+      setUsingFirebase(true);
       setLoading(false);
     }, (error) => {
-      console.error("Firestore listener error in AdminDashboard:", error);
-      setLoading(false);
+      console.error("Firestore listener error in AdminDashboard, falling back to local storage:", error);
+      setUsingFirebase(false);
+      loadLocalBookings();
     });
 
     return () => unsubscribe();
@@ -1133,19 +583,38 @@ export default function AdminDashboard() {
   }, [bookings, filterDate, searchTerm]);
 
   const todayBookingsCount = bookings.filter(
-    (booking) => booking.date === today && booking.status !== "Cancelled",
+    (booking) => booking.date === today && (booking.bookingStatus || booking.status) !== "Cancelled",
   ).length;
   
-  const confirmedBookingsCount = bookings.filter((booking) => booking.status !== "Cancelled").length;
+  const confirmedBookingsCount = bookings.filter((booking) => (booking.bookingStatus || booking.status) !== "Cancelled").length;
 
-  const handleCancel = async (bookingId) => {
+  const handleCancel = async (booking) => {
+    const bookingId = booking.id || booking.appointmentId;
+    const docId = booking.docId || bookingId;
     if (window.confirm("Are you sure you want to cancel this booking?")) {
       try {
-        const docRef = doc(db, "bookings", bookingId);
-        await updateDoc(docRef, {
-          bookingStatus: "Cancelled",
-          status: "Cancelled" // Compatibility fallback
-        });
+        cancelBooking(bookingId);
+
+        if (usingFirebase) {
+          try {
+            const docRef = doc(db, "bookings", docId);
+            await updateDoc(docRef, {
+              bookingStatus: "Cancelled",
+              status: "Cancelled" // Compatibility fallback
+            });
+          } catch (dbErr) {
+            console.warn("Firestore cancel failed, updating local state only:", dbErr);
+            const updated = bookings.map((b) =>
+              b.id === bookingId ? { ...b, bookingStatus: "Cancelled", status: "Cancelled" } : b
+            );
+            setBookings(updated);
+          }
+        } else {
+          const updated = bookings.map((b) =>
+            b.id === bookingId ? { ...b, bookingStatus: "Cancelled", status: "Cancelled" } : b
+          );
+          setBookings(updated);
+        }
       } catch (err) {
         console.error("Firestore cancel failed:", err);
         alert("Failed to cancel booking: " + err.message);
@@ -1153,11 +622,26 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleDelete = async (bookingId) => {
+  const handleDelete = async (booking) => {
+    const bookingId = booking.id || booking.appointmentId;
+    const docId = booking.docId || bookingId;
     if (window.confirm("Are you sure you want to permanently delete this booking record?")) {
       try {
-        const docRef = doc(db, "bookings", bookingId);
-        await deleteDoc(docRef);
+        deleteBooking(bookingId);
+
+        if (usingFirebase) {
+          try {
+            const docRef = doc(db, "bookings", docId);
+            await deleteDoc(docRef);
+          } catch (dbErr) {
+            console.warn("Firestore delete failed, updating local state only:", dbErr);
+            const updated = bookings.filter((b) => b.id !== bookingId);
+            setBookings(updated);
+          }
+        } else {
+          const updated = bookings.filter((b) => b.id !== bookingId);
+          setBookings(updated);
+        }
       } catch (err) {
         console.error("Firestore delete failed:", err);
         alert("Failed to delete booking: " + err.message);
@@ -1167,7 +651,7 @@ export default function AdminDashboard() {
 
   const handleLogout = () => {
     window.localStorage.removeItem(ADMIN_SESSION_KEY);
-    navigate("/customer-login", { replace: true }); // Unified login redirect
+    navigate("/customer-login", { replace: true });
   };
 
   return (
@@ -1176,9 +660,9 @@ export default function AdminDashboard() {
         <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="text-sm font-bold uppercase text-gold">Admin Dashboard</p>
-            <h1 className="mt-2 font-display text-4xl font-bold text-plum">Booking Manager</h1>
+            <h1 className="mt-2 font-display text-4xl font-bold text-plum">Dashboard Manager</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-plum/70">
-              Track appointments, filter the schedule, cancel bookings, and keep the parlour calendar tidy.
+              Track customer appointments, upload service reference styles, and keep the salon operations organized.
             </p>
           </div>
           <button type="button" className="secondary-button self-start lg:self-auto" onClick={handleLogout}>
@@ -1187,141 +671,275 @@ export default function AdminDashboard() {
           </button>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-3">
-          <article className="rounded-lg border border-rose/10 bg-white p-5 shadow-salon">
-            <Users className="text-rose" size={26} aria-hidden="true" />
-            <p className="mt-4 text-sm font-bold text-plum/65">Total bookings</p>
-            <p className="mt-1 text-3xl font-extrabold text-plum">{bookings.length}</p>
-          </article>
-          <article className="rounded-lg border border-gold/20 bg-white p-5 shadow-salon">
-            <CalendarCheck className="text-gold" size={26} aria-hidden="true" />
-            <p className="mt-4 text-sm font-bold text-plum/65">Today's bookings</p>
-            <p className="mt-1 text-3xl font-extrabold text-plum">{todayBookingsCount}</p>
-          </article>
-          <article className="rounded-lg border border-emerald-100 bg-white p-5 shadow-salon">
-            <BadgeCheck className="text-emerald-600" size={26} aria-hidden="true" />
-            <p className="mt-4 text-sm font-bold text-plum/65">Confirmed bookings</p>
-            <p className="mt-1 text-3xl font-extrabold text-plum">{confirmedBookingsCount}</p>
-          </article>
+        {/* Tab Navigation */}
+        <div className="mb-8 flex gap-6 border-b border-rose/10 pb-3">
+          <button
+            type="button"
+            onClick={() => setActiveTab("bookings")}
+            className={`text-sm font-bold pb-2 transition-all border-b-2 ${
+              activeTab === "bookings"
+                ? "text-rose border-rose"
+                : "text-plum/50 border-transparent hover:text-rose"
+            }`}
+          >
+            Manage Bookings
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("gallery")}
+            className={`text-sm font-bold pb-2 transition-all border-b-2 ${
+              activeTab === "gallery"
+                ? "text-rose border-rose"
+                : "text-plum/50 border-transparent hover:text-rose"
+            }`}
+          >
+            Style Gallery Manager
+          </button>
         </div>
 
-        <div className="mt-8 rounded-lg border border-rose/10 bg-white p-5 shadow-salon">
-          <div className="grid gap-4 lg:grid-cols-[1fr_220px_auto] lg:items-end">
-            <label className="grid gap-2">
-              <span className="field-label">Search by customer or service</span>
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-rose" size={18} />
-                <input
-                  className="field-input pl-10"
-                  value={searchTerm}
-                  onChange={(event) => setSearchTerm(event.target.value)}
-                  placeholder="Search bookings"
-                />
-              </div>
-            </label>
-            <label className="grid gap-2">
-              <span className="field-label">Filter by date</span>
-              <input
-                className="field-input"
-                type="date"
-                value={filterDate}
-                onChange={(event) => setFilterDate(event.target.value)}
-              />
-            </label>
-            <button
-              type="button"
-              className="secondary-button h-[46px]"
-              onClick={() => {
-                setSearchTerm("");
-                setFilterDate("");
-              }}
-            >
-              Clear
-            </button>
-          </div>
-
-          <div className="mt-6 overflow-x-auto">
-            {loading ? (
-              <div className="text-center py-12 text-sm font-semibold text-plum/60 animate-pulse">
-                Loading appointments from Firestore...
-              </div>
-            ) : (
-              <table className="w-full min-w-[900px] border-separate border-spacing-y-3 text-left text-sm">
-                <thead>
-                  <tr className="text-xs uppercase text-plum/55">
-                    <th className="px-3 py-2">Customer</th>
-                    <th className="px-3 py-2">Phone</th>
-                    <th className="px-3 py-2">Email</th>
-                    <th className="px-3 py-2">Service</th>
-                    <th className="px-3 py-2">Date</th>
-                    <th className="px-3 py-2">Time</th>
-                    <th className="px-3 py-2">Status</th>
-                    <th className="px-3 py-2">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredBookings.map((booking) => (
-                    <tr key={booking.id} className="rounded-lg bg-petal/60 text-plum shadow-sm">
-                      <td className="rounded-l-lg px-3 py-4 font-bold">{booking.customerName}</td>
-                      <td className="px-3 py-4">{booking.phone}</td>
-                      <td className="px-3 py-4">{booking.email}</td>
-                      <td className="px-3 py-4">
-                        <div className="font-bold text-plum">{booking.serviceName}</div>
-                        <div className="text-xs font-semibold text-rose mt-1">
-                          Price: {booking.price || booking.servicePrice || "N/A"} • Duration: {booking.duration || booking.serviceDuration || "N/A"}
-                        </div>
-                        {booking.notes && (
-                          <div className="text-xs text-plum/60 italic mt-1 max-w-[200px] truncate" title={booking.notes}>
-                            Note: "{booking.notes}"
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-3 py-4">{formatDate(booking.date)}</td>
-                      <td className="px-3 py-4">
-                        <div className="font-semibold text-plum">
-                          {booking.time}
-                          {booking.endTime && ` - ${booking.endTime}`}
-                        </div>
-                      </td>
-                      <td className="px-3 py-4">
-                        <span className={`rounded-full border px-3 py-1 text-xs font-bold ${statusClass(booking.status)}`}>
-                          {booking.status}
-                        </span>
-                      </td>
-                      <td className="rounded-r-lg px-3 py-4">
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-red-200 bg-white text-red-600 transition hover:bg-red-50 disabled:opacity-40"
-                            aria-label="Cancel booking"
-                            disabled={booking.status === "Cancelled"}
-                            onClick={() => handleCancel(booking.id)}
-                          >
-                            <XCircle size={18} aria-hidden="true" />
-                          </button>
-                          <button
-                            type="button"
-                            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-plum/10 bg-white text-plum transition hover:bg-plum hover:text-white"
-                            aria-label="Delete booking"
-                            onClick={() => handleDelete(booking.id)}
-                          >
-                            <Trash2 size={18} aria-hidden="true" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-
-          {!loading && filteredBookings.length === 0 && (
-            <div className="mt-6 rounded-lg border border-dashed border-rose/25 bg-petal/50 p-6 text-center text-sm font-semibold text-plum/70">
-              No bookings match the current filters.
+        {activeTab === "bookings" ? (
+          <>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <article className="rounded-lg border border-rose/10 bg-white p-5 shadow-salon">
+                <Users className="text-rose" size={26} aria-hidden="true" />
+                <p className="mt-4 text-sm font-bold text-plum/65">Total bookings</p>
+                <p className="mt-1 text-3xl font-extrabold text-plum">{bookings.length}</p>
+              </article>
+              <article className="rounded-lg border border-gold/20 bg-white p-5 shadow-salon">
+                <CalendarCheck className="text-gold" size={26} aria-hidden="true" />
+                <p className="mt-4 text-sm font-bold text-plum/65">Today's bookings</p>
+                <p className="mt-1 text-3xl font-extrabold text-plum">{todayBookingsCount}</p>
+              </article>
+              <article className="rounded-lg border border-emerald-100 bg-white p-5 shadow-salon">
+                <BadgeCheck className="text-emerald-600" size={26} aria-hidden="true" />
+                <p className="mt-4 text-sm font-bold text-plum/65">Confirmed bookings</p>
+                <p className="mt-1 text-3xl font-extrabold text-plum">{confirmedBookingsCount}</p>
+              </article>
             </div>
-          )}
-        </div>
+
+            <div className="mt-8 rounded-lg border border-rose/10 bg-white p-5 shadow-salon">
+              <div className="grid gap-4 lg:grid-cols-[1fr_220px_auto] lg:items-end">
+                <label className="grid gap-2">
+                  <span className="field-label">Search by customer or service</span>
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-rose" size={18} />
+                    <input
+                      className="field-input pl-10"
+                      value={searchTerm}
+                      onChange={(event) => setSearchTerm(event.target.value)}
+                      placeholder="Search bookings"
+                    />
+                  </div>
+                </label>
+                <label className="grid gap-2">
+                  <span className="field-label">Filter by date</span>
+                  <input
+                    className="field-input"
+                    type="date"
+                    value={filterDate}
+                    onChange={(event) => setFilterDate(event.target.value)}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="secondary-button h-[46px]"
+                  onClick={() => {
+                    setSearchTerm("");
+                    setFilterDate("");
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
+
+              <div className="mt-6 overflow-x-auto">
+                {loading ? (
+                  <div className="text-center py-12 text-sm font-semibold text-plum/60 animate-pulse">
+                    Loading appointments from Firestore...
+                  </div>
+                ) : (
+                  <table className="w-full min-w-[900px] border-separate border-spacing-y-3 text-left text-sm">
+                    <thead>
+                      <tr className="text-xs uppercase text-plum/55">
+                        <th className="px-3 py-2">Customer</th>
+                        <th className="px-3 py-2">Phone</th>
+                        <th className="px-3 py-2">Email</th>
+                        <th className="px-3 py-2">Service</th>
+                        <th className="px-3 py-2">Date</th>
+                        <th className="px-3 py-2">Time</th>
+                        <th className="px-3 py-2">Status</th>
+                        <th className="px-3 py-2">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredBookings.map((booking) => (
+                        <tr key={booking.id} className="rounded-lg bg-petal/60 text-plum shadow-sm">
+                          <td className="rounded-l-lg px-3 py-4 font-bold">{booking.customerName}</td>
+                          <td className="px-3 py-4">{booking.phone}</td>
+                          <td className="px-3 py-4">{booking.email}</td>
+                          <td className="px-3 py-4">
+                            <div className="font-bold text-plum">{booking.serviceName}</div>
+                            <div className="text-xs font-semibold text-rose mt-1">
+                              Price: {booking.price || booking.servicePrice || "N/A"} • Duration: {booking.duration || booking.serviceDuration || "N/A"}
+                            </div>
+                            {booking.notes && (
+                              <div className="text-xs text-plum/60 italic mt-1 max-w-[200px] truncate" title={booking.notes}>
+                                Note: "{booking.notes}"
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-3 py-4">{formatDate(booking.date)}</td>
+                          <td className="px-3 py-4">
+                            <div className="font-semibold text-plum">
+                              {booking.time}
+                              {booking.endTime && ` - ${booking.endTime}`}
+                            </div>
+                          </td>
+                          <td className="px-3 py-4">
+                            <span className={`rounded-full border px-3 py-1 text-xs font-bold ${statusClass(booking.bookingStatus || booking.status)}`}>
+                              {booking.bookingStatus || booking.status || "Confirmed"}
+                            </span>
+                          </td>
+                          <td className="rounded-r-lg px-3 py-4">
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-red-200 bg-white text-red-600 transition hover:bg-red-50 disabled:opacity-40"
+                                aria-label="Cancel booking"
+                                disabled={(booking.bookingStatus || booking.status) === "Cancelled"}
+                                onClick={() => handleCancel(booking)}
+                              >
+                                <XCircle size={18} aria-hidden="true" />
+                              </button>
+                              <button
+                                type="button"
+                                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-plum/10 bg-white text-plum transition hover:bg-plum hover:text-white"
+                                aria-label="Delete booking"
+                                onClick={() => handleDelete(booking)}
+                              >
+                                <Trash2 size={18} aria-hidden="true" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              {!loading && filteredBookings.length === 0 && (
+                <div className="mt-6 rounded-lg border border-dashed border-rose/25 bg-petal/50 p-6 text-center text-sm font-semibold text-plum/70">
+                  No bookings match the current filters.
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          /* Gallery Tab View */
+          <div className="mt-8 rounded-lg border border-rose/10 bg-white p-6 shadow-salon space-y-6">
+            <h2 className="font-display text-xl font-bold text-plum border-b border-rose/10 pb-3 flex items-center gap-2">
+              <ImageIcon size={20} className="text-rose" />
+              Manage Reference Images
+            </h2>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="grid gap-2">
+                <span className="field-label text-plum/80">Select Service Category</span>
+                <select
+                  value={selectedCategoryId}
+                  onChange={(e) => handleCategoryChange(e.target.value)}
+                  className="field-input text-plum bg-white"
+                >
+                  {CATEGORIES.map((cat) => (
+                    <option key={cat.id} value={cat.id}>
+                      {cat.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="grid gap-2">
+                <span className="field-label text-plum/80">Select Service</span>
+                <select
+                  value={selectedServiceId}
+                  onChange={(e) => setSelectedServiceId(e.target.value)}
+                  className="field-input text-plum bg-white"
+                >
+                  {CATEGORIES.find((c) => c.id === selectedCategoryId)?.services.map((srv) => (
+                    <option key={srv.id} value={srv.id}>
+                      {srv.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="space-y-4 pt-4 border-t border-rose/5">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <h3 className="font-bold text-plum text-sm">
+                  Gallery References ({galleryImages.length})
+                </h3>
+                
+                <label className="secondary-button cursor-pointer flex items-center justify-center gap-1.5 h-11 px-5 self-start sm:self-auto">
+                  <UploadCloud size={18} />
+                  <span>{uploadingImage ? "Uploading..." : "Upload Reference Image"}</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageUpload}
+                    disabled={uploadingImage || !selectedServiceId}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+
+              {uploadError && (
+                <p className="text-xs font-bold text-red-500 bg-red-50 p-2.5 rounded-lg border border-red-100">
+                  {uploadError}
+                </p>
+              )}
+
+              {loadingGallery ? (
+                <div className="text-center py-12 text-sm font-semibold text-plum/60 animate-pulse">
+                  Loading service gallery from database...
+                </div>
+              ) : galleryImages.length === 0 ? (
+                <div className="text-center py-12 text-xs italic text-plum/50 border border-dashed border-rose/20 rounded-xl bg-petal/5">
+                  No images uploaded for this service yet. Defaults will be displayed to customers.
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+                  {galleryImages.map((imgUrl, index) => (
+                    <div
+                      key={index}
+                      className="group relative rounded-xl overflow-hidden border border-rose/10 bg-petal/5 aspect-square shadow-sm hover:shadow transition duration-200"
+                    >
+                      <img
+                        src={getThumbnailUrl(imgUrl)}
+                        alt="Reference preview"
+                        className="w-full h-full object-cover"
+                        loading="lazy"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleImageDelete(imgUrl)}
+                        className="absolute top-2 right-2 rounded-full bg-red-600 text-white p-2 shadow-md hover:bg-red-700 transition opacity-0 group-hover:opacity-100 focus:opacity-100"
+                        title="Delete reference image"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl bg-petal/30 p-4 border border-rose/5 text-xs text-plum/75 font-medium leading-relaxed">
+              💡 <strong>Note:</strong> Uploading reference images stores them securely and links them to the selected service. If you clear all uploaded images, the service gallery automatically restores its Unsplash default presets.
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -1354,6 +972,603 @@ export default function Booking() {
         <BookingForm defaultServiceId={defaultServiceId} />
       </div>
     </section>
+  );
+}
+```
+
+---
+
+## 5. ServiceCard.jsx
+**File Path**: `src/components/ServiceCard.jsx`
+
+```javascript
+import { CalendarCheck, Clock, Sparkles } from "lucide-react";
+import { Link } from "react-router-dom";
+import { isAdminAuthenticated } from "../utils/bookingStorage";
+
+export default function ServiceCard({ service }) {
+  const isAdmin = isAdminAuthenticated();
+
+  return (
+    <article className="flex h-full flex-col rounded-lg border border-rose/10 bg-white shadow-salon transition hover:-translate-y-1 hover:border-rose/25 overflow-hidden">
+      <div className="p-5 pb-0 flex items-start justify-between gap-4">
+        <span className="flex h-11 w-11 items-center justify-center rounded-lg bg-petal text-rose">
+          <Sparkles size={20} aria-hidden="true" />
+        </span>
+        <span className="rounded-full bg-gold/10 px-3 py-1 text-sm font-bold text-gold">
+          {service.price}
+        </span>
+      </div>
+
+      <div className="p-5 flex-1 flex flex-col justify-between">
+        <div>
+          <h3 className="font-display text-lg font-bold text-plum leading-snug">{service.name}</h3>
+          <p className="mt-2 text-xs leading-relaxed text-plum/70">{service.description}</p>
+        </div>
+
+        <div>
+          <div className="mt-4 flex items-center gap-2 text-xs font-semibold text-plum/70 border-t border-rose/5 pt-3">
+            <Clock size={14} aria-hidden="true" />
+            <span>{service.duration}</span>
+          </div>
+
+          {!isAdmin && (
+            <Link to={`/booking?service=${service.id}`} className="primary-button mt-4 w-full text-xs py-2 h-auto flex items-center justify-center gap-1.5">
+              <CalendarCheck size={15} aria-hidden="true" />
+              Book Now
+            </Link>
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}
+```
+
+---
+
+## 6. Services.jsx
+**File Path**: `src/pages/Services.jsx`
+
+```javascript
+import ServiceCard from "../components/ServiceCard";
+import { CATEGORIES } from "../data/beautyData";
+import { useState } from "react";
+
+export default function Services() {
+  const [activeTab, setActiveTab] = useState("all");
+
+  return (
+    <section className="py-12 sm:py-16">
+      <div className="page-shell">
+        <div className="mx-auto mb-10 max-w-3xl text-center">
+          <p className="text-sm font-bold uppercase text-gold">Salon menu</p>
+          <h1 className="section-title mt-2">Beauty Services</h1>
+          <p className="mt-4 text-base leading-7 text-plum/70">
+            Explore our curated menu of professional hair, skin, eye, makeup, and spa services.
+          </p>
+        </div>
+
+        {/* Category Filter Tabs */}
+        <div className="mb-10 flex gap-2 overflow-x-auto pb-3 border-b border-rose/10 scrollbar-thin">
+          <button
+            type="button"
+            onClick={() => setActiveTab("all")}
+            className={`shrink-0 rounded-full px-5 py-2 text-sm font-semibold transition ${
+              activeTab === "all"
+                ? "bg-rose text-white shadow-md"
+                : "bg-petal text-plum/70 border border-rose/10 hover:bg-rose/5"
+            }`}
+          >
+            All Services
+          </button>
+          {CATEGORIES.map((cat) => (
+            <button
+              key={cat.id}
+              type="button"
+              onClick={() => setActiveTab(cat.id)}
+              className={`shrink-0 rounded-full px-5 py-2 text-sm font-semibold transition ${
+                activeTab === cat.id
+                  ? "bg-rose text-white shadow-md"
+                  : "bg-petal text-plum/70 border border-rose/10 hover:bg-rose/5"
+              }`}
+            >
+              {cat.name}
+            </button>
+          ))}
+        </div>
+
+        {/* Grouped Services Layout */}
+        <div className="space-y-12">
+          {CATEGORIES.filter((cat) => activeTab === "all" || cat.id === activeTab).map((category) => (
+            <div key={category.id} className="border-b border-rose/5 pb-10 last:border-b-0 last:pb-0">
+              <h2 className="font-display text-2xl font-bold text-plum mb-6 flex items-center gap-3">
+                <span className="h-3 w-3 rounded-full bg-rose"></span>
+                {category.name}
+                <span className="text-sm font-semibold text-plum/50">({category.services.length} options)</span>
+              </h2>
+              <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {category.services.map((service) => (
+                  <ServiceCard key={service.id} service={service} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+```
+
+---
+
+## 7. Home.jsx
+**File Path**: `src/pages/Home.jsx`
+
+```javascript
+import { CalendarCheck, ChevronRight, Heart, Scissors, Sparkles } from "lucide-react";
+import { Link } from "react-router-dom";
+import ServiceCard from "../components/ServiceCard";
+import { HERO_IMAGE, SERVICES, STUDIO_IMAGE } from "../data/beautyData";
+import { isAdminAuthenticated } from "../utils/bookingStorage";
+
+export default function Home() {
+  const featuredServices = SERVICES.slice(0, 4);
+  const isAdmin = isAdminAuthenticated();
+
+  return (
+    <>
+      <section className="relative min-h-[76vh] overflow-hidden">
+        <img
+          src={HERO_IMAGE}
+          alt="Professional makeup and beauty styling"
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+        <div className="absolute inset-0 bg-gradient-to-r from-plum/85 via-plum/55 to-rose/20" />
+        <div className="relative z-10 flex min-h-[76vh] items-center">
+          <div className="page-shell py-14">
+            <div className="max-w-2xl text-white">
+              <p className="inline-flex items-center gap-2 text-sm font-bold uppercase text-gold">
+                <Sparkles size={18} aria-hidden="true" />
+                Soft glam studio
+              </p>
+              <h1 className="mt-5 font-display text-5xl font-bold leading-tight sm:text-6xl lg:text-7xl">
+                Dhanvika Beauty Parlour
+              </h1>
+              <p className="mt-5 max-w-xl text-base leading-8 text-white/88 sm:text-lg">
+                A modern beauty parlour for hair, skin, makeup, nails, spa care, and confident everyday glow.
+              </p>
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+                {isAdmin ? (
+                  <Link to="/admin" className="primary-button bg-gold text-plum hover:bg-white">
+                    <CalendarCheck size={19} aria-hidden="true" />
+                    Manage Bookings
+                  </Link>
+                ) : (
+                  <Link to="/booking" className="primary-button bg-gold text-plum hover:bg-white">
+                    <CalendarCheck size={19} aria-hidden="true" />
+                    Book Appointment
+                  </Link>
+                )}
+                <Link to="/services" className="secondary-button border-white/35 bg-white/10 text-white hover:bg-white hover:text-plum">
+                  View Services
+                  <ChevronRight size={18} aria-hidden="true" />
+                </Link>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="py-14 sm:py-20">
+        <div className="page-shell">
+          <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-sm font-bold uppercase text-gold">Popular picks</p>
+              <h2 className="section-title mt-2">Signature Services</h2>
+            </div>
+            <Link to="/services" className="secondary-button self-start">
+              All Services
+              <ChevronRight size={18} aria-hidden="true" />
+            </Link>
+          </div>
+
+          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            {featuredServices.map((service) => (
+              <ServiceCard key={service.id} service={service} />
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="bg-white py-14 sm:py-20">
+        <div className="page-shell grid gap-8 lg:grid-cols-[0.95fr_1.05fr] lg:items-center">
+          <div className="overflow-hidden rounded-lg shadow-salon">
+            <img src={STUDIO_IMAGE} alt="Beauty salon styling chairs" className="h-full min-h-[340px] w-full object-cover" />
+          </div>
+          <div>
+            <p className="text-sm font-bold uppercase text-gold">Polished care</p>
+            <h2 className="section-title mt-2">Your appointment, beautifully organized</h2>
+            <p className="mt-4 max-w-2xl text-base leading-8 text-plum/70">
+              Choose from salon essentials and special occasion services, then reserve a clear time slot online. The
+              booking calendar marks booked appointments in red and available slots in green.
+            </p>
+            <div className="mt-7 grid gap-4 sm:grid-cols-3">
+              <div className="rounded-lg border border-rose/10 bg-petal p-4">
+                <Scissors className="text-rose" size={25} aria-hidden="true" />
+                <p className="mt-3 text-sm font-bold text-plum">Hair experts</p>
+              </div>
+              <div className="rounded-lg border border-lavender/40 bg-lavender/20 p-4">
+                <Heart className="text-plum" size={25} aria-hidden="true" />
+                <p className="mt-3 text-sm font-bold text-plum">Skin and spa</p>
+              </div>
+              <div className="rounded-lg border border-gold/20 bg-gold/10 p-4">
+                <Sparkles className="text-gold" size={25} aria-hidden="true" />
+                <p className="mt-3 text-sm font-bold text-plum">Event glam</p>
+              </div>
+            </div>
+            {isAdmin ? (
+              <Link to="/admin" className="primary-button mt-8">
+                <CalendarCheck size={19} aria-hidden="true" />
+                Manage Bookings
+              </Link>
+            ) : (
+              <Link to="/booking" className="primary-button mt-8">
+                <CalendarCheck size={19} aria-hidden="true" />
+                Reserve a Slot
+              </Link>
+            )}
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
+```
+
+---
+
+## 8. Reviews.jsx
+**File Path**: `src/pages/Reviews.jsx`
+
+```javascript
+import { CheckCircle2, MessageCircle, Send, Star, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { SERVICES } from "../data/beautyData";
+import { addReview, getReviews, deleteReview } from "../utils/reviewStorage";
+import { isAdminAuthenticated } from "../utils/bookingStorage";
+
+const emptyReview = {
+  customerName: "",
+  serviceName: "",
+  rating: 5,
+  comment: "",
+};
+
+function RatingStars({ rating, onChange }) {
+  return (
+    <div className="flex gap-2" role="radiogroup" aria-label="Rating">
+      {[1, 2, 3, 4, 5].map((value) => (
+        <button
+          key={value}
+          type="button"
+          role="radio"
+          aria-checked={rating === value}
+          aria-label={`${value} star rating`}
+          onClick={() => onChange(value)}
+          className={`flex h-11 w-11 items-center justify-center rounded-full border transition ${
+            value <= rating
+              ? "border-gold bg-gold/15 text-gold"
+              : "border-rose/15 bg-white text-plum/25 hover:border-gold/50"
+          }`}
+        >
+          <Star size={19} fill={value <= rating ? "currentColor" : "none"} aria-hidden="true" />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ReviewCard({ review, onDelete }) {
+  const isAdmin = isAdminAuthenticated();
+  
+  return (
+    <article className="rounded-lg border border-rose/10 bg-white p-5 shadow-salon relative">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="text-lg font-bold text-plum">{review.customerName}</h3>
+          <p className="mt-1 text-sm font-semibold text-rose">{review.serviceName}</p>
+        </div>
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex gap-1 text-gold" aria-label={`${review.rating} out of 5 stars`}>
+            {[1, 2, 3, 4, 5].map((value) => (
+              <Star
+                key={value}
+                size={16}
+                fill={value <= review.rating ? "currentColor" : "none"}
+                aria-hidden="true"
+              />
+            ))}
+          </div>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => onDelete(review.id)}
+              className="mt-1 text-red-500 hover:text-red-700 font-bold text-xs px-2 py-1 border border-red-200 hover:border-red-400 rounded-md hover:bg-red-50 transition flex items-center gap-1 shadow-sm"
+              title="Delete review"
+            >
+              <Trash2 size={13} />
+              <span>Delete</span>
+            </button>
+          )}
+        </div>
+      </div>
+      <p className="mt-4 text-sm leading-6 text-plum/70">{review.comment}</p>
+      <p className="mt-5 text-xs font-bold uppercase text-plum/45">
+        {new Date(review.createdAt).toLocaleDateString(undefined, {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        })}
+      </p>
+    </article>
+  );
+}
+
+export default function Reviews() {
+  const [reviews, setReviews] = useState(() => getReviews());
+  const [form, setForm] = useState(emptyReview);
+  const [errors, setErrors] = useState({});
+  const [submitted, setSubmitted] = useState(false);
+
+  const averageRating = useMemo(() => {
+    if (reviews.length === 0) return "0.0";
+    const total = reviews.reduce((sum, review) => sum + Number(review.rating), 0);
+    return (total / reviews.length).toFixed(1);
+  }, [reviews]);
+
+  const updateField = (field, value) => {
+    setForm((current) => ({ ...current, [field]: value }));
+    setErrors((current) => ({ ...current, [field]: "" }));
+    setSubmitted(false);
+  };
+
+  const validate = () => {
+    const nextErrors = {};
+    if (!form.customerName.trim()) nextErrors.customerName = "Name is required.";
+    if (!form.serviceName) nextErrors.serviceName = "Please choose a service.";
+    if (!form.comment.trim()) nextErrors.comment = "Please write your review.";
+    else if (form.comment.trim().length < 10) nextErrors.comment = "Review should be at least 10 characters.";
+    setErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
+  };
+
+  const handleSubmit = (event) => {
+    event.preventDefault();
+    if (!validate()) return;
+    const review = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      customerName: form.customerName.trim(),
+      serviceName: form.serviceName,
+      rating: Number(form.rating),
+      comment: form.comment.trim(),
+      createdAt: new Date().toISOString(),
+    };
+    setReviews(addReview(review));
+    setForm(emptyReview);
+    setSubmitted(true);
+  };
+
+  const handleDeleteReview = (reviewId) => {
+    if (window.confirm("Are you sure you want to permanently delete this review?")) {
+      setReviews(deleteReview(reviewId));
+    }
+  };
+
+  return (
+    <section className="bg-petal/45 py-12 sm:py-16">
+      <div className="page-shell">
+        <div className="mx-auto mb-10 max-w-3xl text-center">
+          <p className="text-sm font-bold uppercase text-gold">Customer Reviews</p>
+          <h1 className="section-title mt-2">Loved by Dhanvika Clients</h1>
+          <p className="mt-4 text-base leading-7 text-plum/70">
+            Read customer experiences and share your own visit to Dhanvika Beauty Parlour.
+          </p>
+        </div>
+
+        <div className="mb-8 grid gap-4 sm:grid-cols-3">
+          <article className="rounded-lg border border-rose/10 bg-white p-5 text-center shadow-salon">
+            <p className="text-3xl font-extrabold text-plum">{averageRating}</p>
+            <p className="mt-1 text-sm font-bold text-plum/65">Average rating</p>
+          </article>
+          <article className="rounded-lg border border-gold/20 bg-white p-5 text-center shadow-salon">
+            <p className="text-3xl font-extrabold text-plum">{reviews.length}</p>
+            <p className="mt-1 text-sm font-bold text-plum/65">Total reviews</p>
+          </article>
+          <article className="rounded-lg border border-lavender/40 bg-white p-5 text-center shadow-salon">
+            <p className="text-3xl font-extrabold text-plum">5</p>
+            <p className="mt-1 text-sm font-bold text-plum/65">Star experience goal</p>
+          </article>
+        </div>
+
+        <div className="grid gap-8 lg:grid-cols-[0.95fr_1.05fr]">
+          <form onSubmit={handleSubmit} className="rounded-lg border border-rose/10 bg-white p-5 shadow-salon sm:p-7">
+            {/* Form content */}
+            <div className="mb-6">
+              <div className="flex items-center gap-3">
+                <span className="flex h-11 w-11 items-center justify-center rounded-lg bg-rose text-white">
+                  <MessageCircle size={20} aria-hidden="true" />
+                </span>
+                <div>
+                  <p className="text-sm font-bold uppercase text-gold">Write a review</p>
+                  <h2 className="font-display text-3xl font-bold text-plum">Share Your Experience</h2>
+                </div>
+              </div>
+            </div>
+            <div className="grid gap-5">
+              <label className="grid gap-2">
+                <span className="field-label">Customer name</span>
+                <input className="field-input" value={form.customerName} onChange={(e) => updateField("customerName", e.target.value)} placeholder="Your name" />
+                {errors.customerName && <span className="text-sm font-semibold text-red-600">{errors.customerName}</span>}
+              </label>
+              <label className="grid gap-2">
+                <span className="field-label">Service</span>
+                <select className="field-input" value={form.serviceName} onChange={(e) => updateField("serviceName", e.target.value)}>
+                  <option value="">Choose a service</option>
+                  {SERVICES.map((service) => (
+                    <option key={service.id} value={service.name}>{service.name}</option>
+                  ))}
+                </select>
+                {errors.serviceName && <span className="text-sm font-semibold text-red-600">{errors.serviceName}</span>}
+              </label>
+              <div className="grid gap-2">
+                <span className="field-label">Rating</span>
+                <RatingStars rating={form.rating} onChange={(rating) => updateField("rating", rating)} />
+              </div>
+              <label className="grid gap-2">
+                <span className="field-label">Review</span>
+                <textarea className="field-input min-h-32 resize-y" value={form.comment} onChange={(e) => updateField("comment", e.target.value)} placeholder="Tell us what you loved about your visit" />
+                {errors.comment && <span className="text-sm font-semibold text-red-600">{errors.comment}</span>}
+              </label>
+            </div>
+            {submitted && (
+              <div className="mt-5 flex items-center gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+                <CheckCircle2 size={18} aria-hidden="true" />
+                Review submitted successfully.
+              </div>
+            )}
+            <button type="submit" className="primary-button mt-6 w-full">
+              <Send size={18} aria-hidden="true" />
+              Submit Review
+            </button>
+          </form>
+
+          <div className="grid gap-5">
+            {reviews.map((review) => (
+              <ReviewCard key={review.id} review={review} onDelete={handleDeleteReview} />
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+```
+
+---
+
+## 9. Navbar.jsx
+**File Path**: `src/components/Navbar.jsx`
+
+> Key features: dynamic nav items based on auth state (admin vs customer vs guest), mobile dropdown menu, sticky header with blur backdrop.
+> See actual file at `src/components/Navbar.jsx` for the full implementation.
+
+---
+
+## 10. CustomerLogin.jsx
+**File Path**: `src/pages/CustomerLogin.jsx`
+
+> Admin credentials (built in): Email `admin@glam.com` or `admin`, Password `admin123`
+> See actual file at `src/pages/CustomerLogin.jsx` for the full implementation.
+
+---
+
+## 11. firebase/config.js
+**File Path**: `src/firebase/config.js`
+
+```javascript
+import { initializeApp, getApps, getApp } from "firebase/app";
+import { getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
+
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyDummyKeyForViteDevBuildSuccess",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "dhanvika-beauty-parlour.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "dhanvika-beauty-parlour",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "dhanvika-beauty-parlour.appspot.com",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:1234567890:web:abcdef123456"
+};
+
+// Initialize Firebase
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+export const db = getFirestore(app);
+export const storage = getStorage(app);
+
+export const isFirebaseConfigured = 
+  !!import.meta.env.VITE_FIREBASE_API_KEY && 
+  import.meta.env.VITE_FIREBASE_API_KEY !== "AIzaSyDummyKeyForViteDevBuildSuccess";
+```
+
+---
+
+## 12. App.jsx
+**File Path**: `src/App.jsx`
+
+```javascript
+import { useEffect } from "react";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import Navbar from "./components/Navbar";
+import AdminDashboard from "./components/AdminDashboard";
+import { isAdminAuthenticated, isCustomerAuthenticated } from "./utils/bookingStorage";
+import CustomerLogin from "./pages/CustomerLogin";
+import CustomerDashboard from "./pages/CustomerDashboard";
+import AdminLogin from "./pages/AdminLogin";
+import Booking from "./pages/Booking";
+import Home from "./pages/Home";
+import Reviews from "./pages/Reviews";
+import Services from "./pages/Services";
+
+function ScrollToTop() {
+  const { pathname } = useLocation();
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [pathname]);
+  return null;
+}
+
+function ProtectedAdminRoute() {
+  return isAdminAuthenticated() ? <AdminDashboard /> : <Navigate to="/admin-login" replace />;
+}
+
+function ProtectedCustomerRoute() {
+  return isCustomerAuthenticated() ? <CustomerDashboard /> : <Navigate to="/customer-login" replace />;
+}
+
+function AppLayout() {
+  return (
+    <div className="min-h-screen">
+      <ScrollToTop />
+      <Navbar />
+      <main>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/services" element={<Services />} />
+          <Route path="/reviews" element={<Reviews />} />
+          <Route path="/booking" element={<Booking />} />
+          <Route path="/admin-login" element={<AdminLogin />} />
+          <Route path="/admin" element={<ProtectedAdminRoute />} />
+          <Route path="/customer-login" element={<CustomerLogin />} />
+          <Route path="/customer-dashboard" element={<ProtectedCustomerRoute />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </main>
+      <footer className="border-t border-rose/10 bg-white/80 py-6">
+        <div className="page-shell flex flex-col gap-2 text-sm text-plum/70 sm:flex-row sm:items-center sm:justify-between">
+          <span>Dhanvika Beauty Parlour</span>
+          <span>Soft glam, expert care, beautiful appointments.</span>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <AppLayout />
+    </BrowserRouter>
   );
 }
 ```

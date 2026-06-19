@@ -1,7 +1,8 @@
-import { CheckCircle2, MessageCircle, Send, Star } from "lucide-react";
+import { CheckCircle2, MessageCircle, Send, Star, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { SERVICES } from "../data/beautyData";
-import { addReview, getReviews } from "../utils/reviewStorage";
+import { addReview, getReviews, deleteReview } from "../utils/reviewStorage";
+import { isAdminAuthenticated } from "../utils/bookingStorage";
 
 const emptyReview = {
   customerName: "",
@@ -34,23 +35,38 @@ function RatingStars({ rating, onChange }) {
   );
 }
 
-function ReviewCard({ review }) {
+function ReviewCard({ review, onDelete }) {
+  const isAdmin = isAdminAuthenticated();
+  
   return (
-    <article className="rounded-lg border border-rose/10 bg-white p-5 shadow-salon">
+    <article className="rounded-lg border border-rose/10 bg-white p-5 shadow-salon relative">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h3 className="text-lg font-bold text-plum">{review.customerName}</h3>
           <p className="mt-1 text-sm font-semibold text-rose">{review.serviceName}</p>
         </div>
-        <div className="flex gap-1 text-gold" aria-label={`${review.rating} out of 5 stars`}>
-          {[1, 2, 3, 4, 5].map((value) => (
-            <Star
-              key={value}
-              size={16}
-              fill={value <= review.rating ? "currentColor" : "none"}
-              aria-hidden="true"
-            />
-          ))}
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex gap-1 text-gold" aria-label={`${review.rating} out of 5 stars`}>
+            {[1, 2, 3, 4, 5].map((value) => (
+              <Star
+                key={value}
+                size={16}
+                fill={value <= review.rating ? "currentColor" : "none"}
+                aria-hidden="true"
+              />
+            ))}
+          </div>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => onDelete(review.id)}
+              className="mt-1 text-red-500 hover:text-red-700 font-bold text-xs px-2 py-1 border border-red-200 hover:border-red-400 rounded-md hover:bg-red-50 transition flex items-center gap-1 shadow-sm"
+              title="Delete review"
+            >
+              <Trash2 size={13} />
+              <span>Delete</span>
+            </button>
+          )}
         </div>
       </div>
       <p className="mt-4 text-sm leading-6 text-plum/70">{review.comment}</p>
@@ -127,6 +143,13 @@ export default function Reviews() {
     setForm(emptyReview);
     setSubmitted(true);
   };
+
+  const handleDeleteReview = (reviewId) => {
+    if (window.confirm("Are you sure you want to permanently delete this review?")) {
+      setReviews(deleteReview(reviewId));
+    }
+  };
+
 
   return (
     <section className="bg-petal/45 py-12 sm:py-16">
@@ -229,7 +252,7 @@ export default function Reviews() {
 
           <div className="grid gap-5">
             {reviews.map((review) => (
-              <ReviewCard key={review.id} review={review} />
+              <ReviewCard key={review.id} review={review} onDelete={handleDeleteReview} />
             ))}
           </div>
         </div>

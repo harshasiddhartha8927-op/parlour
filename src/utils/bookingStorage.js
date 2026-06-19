@@ -34,21 +34,31 @@ export const saveBookings = (bookings) => {
 
 export const addBooking = (booking) => {
   const bookings = getBookings();
-  const nextBookings = [booking, ...bookings];
+  const normalized = {
+    ...booking,
+    id: booking.id || booking.appointmentId
+  };
+  const nextBookings = [normalized, ...bookings];
   saveBookings(nextBookings);
   return nextBookings;
 };
 
 export const cancelBooking = (bookingId) => {
-  const nextBookings = getBookings().map((booking) =>
-    booking.id === bookingId ? { ...booking, status: "Cancelled" } : booking,
-  );
+  const nextBookings = getBookings().map((booking) => {
+    const id = booking.id || booking.appointmentId;
+    return id === bookingId
+      ? { ...booking, bookingStatus: "Cancelled", status: "Cancelled" }
+      : booking;
+  });
   saveBookings(nextBookings);
   return nextBookings;
 };
 
 export const deleteBooking = (bookingId) => {
-  const nextBookings = getBookings().filter((booking) => booking.id !== bookingId);
+  const nextBookings = getBookings().filter((booking) => {
+    const id = booking.id || booking.appointmentId;
+    return id !== bookingId;
+  });
   saveBookings(nextBookings);
   return nextBookings;
 };

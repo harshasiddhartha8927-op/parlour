@@ -23,6 +23,40 @@ import {
   addBooking,
   getBookings
 } from "../utils/bookingStorage";
+import { generateAppointmentPDF, uploadPDF } from "../utils/pdfGenerator";
+
+function ServicePickerItem({ service, isSelected, onToggle, disabled }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={disabled}
+      className={`flex gap-4 items-start rounded-xl border p-3 text-left transition-all duration-200 ${
+        isSelected
+          ? "border-rose bg-rose/5 ring-2 ring-rose/25 animate-pulse-subtle"
+          : "border-rose/10 bg-white hover:border-rose/30"
+      }`}
+    >
+      <div className="flex-1 min-w-0">
+        <div className="flex justify-between w-full items-start gap-2">
+          <span className="font-bold text-plum text-sm tracking-tight flex items-center gap-1.5 truncate">
+            <input
+              type="checkbox"
+              checked={isSelected}
+              readOnly
+              className="rounded text-rose focus:ring-rose h-4 w-4 shrink-0"
+            />
+            <span className="truncate">{service.name}</span>
+          </span>
+          <span className="font-extrabold text-gold text-sm shrink-0">{service.price}</span>
+        </div>
+        <div className="mt-1 text-[11px] text-plum/60 leading-normal">
+          <span className="font-semibold text-rose">{service.duration}</span> • {service.description}
+        </div>
+      </div>
+    </button>
+  );
+}
 
 export default function BookingForm({ defaultServiceId = "" }) {
   const customerSession = getCustomerSession();
@@ -59,6 +93,21 @@ export default function BookingForm({ defaultServiceId = "" }) {
   const [loadingBookings, setLoadingBookings] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [successBooking, setSuccessBooking] = useState(null);
+
+  // PDF Background generation status states
+  const [pdfState, setPdfState] = useState("idle"); // 'idle' | 'generating' | 'uploading' | 'completed' | 'error'
+  const [pdfError, setPdfError] = useState("");
+  const [pdfUrl, setPdfUrl] = useState("");
+
+  const [invoiceWhatsApp, setInvoiceWhatsApp] = useState("");
+  const [isWhatsAppTouched, setIsWhatsAppTouched] = useState(false);
+
+  // Sync invoiceWhatsApp with form.phone if it hasn't been manually edited
+  useEffect(() => {
+    if (!isWhatsAppTouched) {
+      setInvoiceWhatsApp(form.phone);
+    }
+  }, [form.phone, isWhatsAppTouched]);
 
   const today = getTodayDate();
 
@@ -251,8 +300,65 @@ export default function BookingForm({ defaultServiceId = "" }) {
       }
     }
 
+    // Validate Invoice WhatsApp Number
+    const rawWhatsApp = invoiceWhatsApp.trim();
+    if (!rawWhatsApp) {
+      newErrors.invoiceWhatsApp = "Please enter a valid WhatsApp number to send the invoice.";
+    } else if (!/^\d+$/.test(rawWhatsApp)) {
+      newErrors.invoiceWhatsApp = "Please enter a valid WhatsApp number to send the invoice.";
+    } else if (rawWhatsApp.length !== 10) {
+      newErrors.invoiceWhatsApp = "Please enter a valid WhatsApp number to send the invoice.";
+    }
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
+  };
+
+  // Process PDF generation and redirection in the background
+  const processPdfAndRedirect = async (payload, servicesList, targetWhatsApp) => {
+    setPdfState("generating");
+    setPdfError("");
+    setPdfUrl("");
+    try {
+      // Generate PDF Blob
+      const pdfBlob = generateAppointmentPDF(payload, servicesList);
+      
+      setPdfState("uploading");
+      // Upload PDF Blob
+      const uploadedUrl = await uploadPDF(pdfBlob);
+      
+      setPdfState("completed");
+      setPdfUrl(uploadedUrl);
+
+      // Clean/format targetWhatsApp: prefix with 91 for Indian numbers (validated to 10 digits)
+      const formattedWhatsApp = `91${targetWhatsApp}`;
+
+      // Format WhatsApp Message exactly as requested
+      const message = `🌸 Dhanvika Beauty Parlour
+
+Dear ${payload.customerName},
+
+Your appointment has been successfully confirmed.
+
+📅 Date: ${payload.bookingDate}
+⏰ Time: ${payload.startTime}
+💇 Services: ${payload.serviceName}
+💰 Amount: ₹${payload.price.replace("Rs. ", "")}
+🆔 Booking ID: ${payload.appointmentId}
+
+📄 Appointment PDF:
+${uploadedUrl}
+
+Thank you for choosing Dhanvika Beauty Parlour.
+Beauty | Elegance | Confidence`;
+
+      const whatsappUrl = `https://wa.me/${formattedWhatsApp}?text=${encodeURIComponent(message)}`;
+      window.location.href = whatsappUrl;
+    } catch (err) {
+      console.error("PDF/WhatsApp flow failed:", err);
+      setPdfState("error");
+      setPdfError(err.message || "Failed to generate or upload PDF.");
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -263,11 +369,15 @@ export default function BookingForm({ defaultServiceId = "" }) {
 
     setSubmitting(true);
     setErrors({});
+    setPdfState("idle");
+    setPdfError("");
+    setPdfUrl("");
 
     const chosenSlot = availableSlots.find((s) => s.time === form.time);
     const appointmentId = `APT-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 
     const bookingPayload = {
+      id: appointmentId,
       appointmentId,
       customerName: form.customerName.trim(),
       phone: form.phone.trim(),
@@ -282,8 +392,12 @@ export default function BookingForm({ defaultServiceId = "" }) {
       price: totalPricingStr,
       bookingStatus: "Confirmed",
       notes: form.notes.trim(),
-      createdTime: new Date().toISOString()
+      createdTime: new Date().toISOString(),
+      invoiceWhatsApp: invoiceWhatsApp.trim()
     };
+
+    // Save a copy of selectedServices before clearing state
+    const servicesSnap = [...selectedServices];
 
     try {
       if (!isFirebaseConfigured) {
@@ -335,26 +449,8 @@ export default function BookingForm({ defaultServiceId = "" }) {
       }));
       setSelectedServices([]);
 
-      // WhatsApp message format
-      const waText = `Hello, I want to confirm my appointment.
-
-Appointment Details:
-Booking ID: ${bookingPayload.appointmentId}
-Customer Name: ${bookingPayload.customerName}
-Phone Number: ${bookingPayload.phone}
-Email: ${bookingPayload.email}
-Selected Services: ${bookingPayload.serviceName}
-Appointment Date: ${bookingPayload.bookingDate}
-Start Time: ${bookingPayload.startTime}
-End Time: ${bookingPayload.endTime}
-Total Duration: ${bookingPayload.duration}
-Total Price: ${bookingPayload.price}
-Notes: ${bookingPayload.notes || "None"}
-
-Please confirm my booking.`;
-
-      const whatsappUrl = `https://wa.me/917065674284?text=${encodeURIComponent(waText)}`;
-      window.location.href = whatsappUrl;
+      // Kick off background PDF generation and upload
+      processPdfAndRedirect(bookingPayload, servicesSnap, invoiceWhatsApp.trim());
 
     } catch (err) {
       console.error("Failed to save booking:", err);
@@ -369,26 +465,8 @@ Please confirm my booking.`;
         }));
         setSelectedServices([]);
 
-        // WhatsApp message format
-        const waText = `Hello, I want to confirm my appointment.
-
-Appointment Details:
-Booking ID: ${bookingPayload.appointmentId}
-Customer Name: ${bookingPayload.customerName}
-Phone Number: ${bookingPayload.phone}
-Email: ${bookingPayload.email}
-Selected Services: ${bookingPayload.serviceName}
-Appointment Date: ${bookingPayload.bookingDate}
-Start Time: ${bookingPayload.startTime}
-End Time: ${bookingPayload.endTime}
-Total Duration: ${bookingPayload.duration}
-Total Price: ${bookingPayload.price}
-Notes: ${bookingPayload.notes || "None"}
-
-Please confirm my booking.`;
-
-        const whatsappUrl = `https://wa.me/917065674284?text=${encodeURIComponent(waText)}`;
-        window.location.href = whatsappUrl;
+        // Kick off background PDF generation and upload
+        processPdfAndRedirect(bookingPayload, servicesSnap, invoiceWhatsApp.trim());
 
       } catch (localErr) {
         setErrors({ submit: "Failed to confirm appointment. Please try again." });
@@ -501,36 +579,17 @@ Please confirm my booking.`;
               </div>
 
               {/* Service list equal-height grid */}
-              <div className="grid gap-3 sm:grid-cols-2 max-h-[260px] overflow-y-auto border border-rose/10 rounded-xl p-3 bg-petal/10 scrollbar-thin">
+              <div className="grid gap-3 sm:grid-cols-2 max-h-[300px] overflow-y-auto border border-rose/10 rounded-xl p-3 bg-petal/10 scrollbar-thin">
                 {currentCategory.services.map((service) => {
                   const isSelected = selectedServices.some((s) => s.id === service.id);
                   return (
-                    <button
+                    <ServicePickerItem
                       key={service.id}
-                      type="button"
-                      onClick={() => toggleService(service)}
-                      className={`flex flex-col h-full justify-between rounded-xl border p-4 text-left transition-all duration-200 ${
-                        isSelected
-                          ? "border-rose bg-rose/5 ring-2 ring-rose/25"
-                          : "border-rose/10 bg-white hover:border-rose/30"
-                      }`}
-                    >
-                      <div className="flex justify-between w-full items-start gap-3">
-                        <span className="font-bold text-plum text-sm tracking-tight flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            readOnly
-                            className="rounded text-rose focus:ring-rose h-4 w-4"
-                          />
-                          {service.name}
-                        </span>
-                        <span className="font-extrabold text-gold text-sm shrink-0">{service.price}</span>
-                      </div>
-                      <div className="mt-2 text-xs text-plum/60 leading-normal pl-6">
-                        <span className="font-semibold text-rose">{service.duration}</span> • {service.description}
-                      </div>
-                    </button>
+                      service={service}
+                      isSelected={isSelected}
+                      onToggle={() => toggleService(service)}
+                      disabled={submitting}
+                    />
                   );
                 })}
               </div>
@@ -740,13 +799,36 @@ Please confirm my booking.`;
                 </div>
               )}
               
+              {/* Invoice WhatsApp Number */}
+              <div className="space-y-1.5 border-t border-rose/10 pt-4">
+                <label className="field-label flex items-center gap-2 text-plum/85 font-semibold text-xs">
+                  <Phone size={14} className="text-rose" />
+                  Invoice WhatsApp Number
+                </label>
+                <input
+                  type="tel"
+                  placeholder="Enter customer WhatsApp number"
+                  className="field-input text-plum w-full text-xs py-2"
+                  value={invoiceWhatsApp}
+                  onChange={(e) => {
+                    setInvoiceWhatsApp(e.target.value);
+                    setIsWhatsAppTouched(true);
+                    setErrors((prev) => ({ ...prev, invoiceWhatsApp: "" }));
+                  }}
+                  disabled={submitting}
+                />
+                {errors.invoiceWhatsApp && (
+                  <p className="text-[11px] font-bold text-red-500 mt-1">{errors.invoiceWhatsApp}</p>
+                )}
+              </div>
+
               {/* Submit Button */}
               <button
                 onClick={handleSubmit}
                 disabled={submitting || selectedServices.length === 0 || !form.date || !form.time}
                 className="w-full primary-button py-3.5 text-sm font-bold flex items-center justify-center gap-2 hover:shadow-lg disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 mt-3"
               >
-                {submitting ? "Saving Booking..." : "Confirm Booking"}
+                {submitting ? "Saving Booking..." : "Confirm Booking & Send Invoice"}
               </button>
               
               <p className="text-[11px] text-center text-plum/50 leading-relaxed max-w-xs mx-auto">
@@ -757,18 +839,87 @@ Please confirm my booking.`;
 
           {/* Real-time Success Card */}
           {successBooking && (
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50/95 p-5 text-emerald-950 shadow-md backdrop-blur-sm animate-fade-in animate-pulse-once">
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50/95 p-5 text-emerald-950 shadow-md backdrop-blur-sm animate-fade-in">
               <div className="flex items-center gap-2">
-                <CheckCircle className="text-emerald-600" size={20} />
-                <h4 className="font-bold text-sm">Booking Confirmed!</h4>
+                <CheckCircle className="text-emerald-600 animate-bounce" size={20} />
+                <h4 className="font-bold text-sm text-emerald-900">Booking Confirmed!</h4>
               </div>
-              <p className="text-xs text-emerald-800/80 mt-1">Opening WhatsApp for salon notification...</p>
-              <div className="mt-3 rounded-xl bg-white/70 p-3 text-[11px] font-mono space-y-1.5 border border-emerald-100">
+              
+              {/* PDF Background status tracking */}
+              <div className="mt-2.5 space-y-1 bg-white/60 p-3 rounded-xl border border-emerald-100/60 text-xs">
+                {pdfState === "generating" && (
+                  <p className="flex items-center gap-2 text-emerald-800 font-semibold">
+                    <Sparkles className="animate-spin text-pink-500 shrink-0" size={14} />
+                    🌸 Generating appointment PDF slip...
+                  </p>
+                )}
+                {pdfState === "uploading" && (
+                  <p className="flex items-center gap-2 text-emerald-800 font-semibold">
+                    <FileText className="animate-pulse text-yellow-600 shrink-0" size={14} />
+                    ☁️ Uploading PDF to secure temporary host...
+                  </p>
+                )}
+                {pdfState === "completed" && (
+                  <p className="flex items-center gap-2 text-emerald-800 font-semibold">
+                    <CheckCircle className="text-emerald-600 shrink-0" size={14} />
+                    💬 Redirecting to WhatsApp...
+                  </p>
+                )}
+                {pdfState === "error" && (
+                  <div className="space-y-1">
+                    <p className="flex items-center gap-2 text-red-700 font-semibold">
+                      <AlertCircle className="shrink-0" size={14} />
+                      Could not compile PDF, redirecting to standard WhatsApp message...
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const message = `🌸 Dhanvika Beauty Parlour
+
+Dear ${successBooking.customerName},
+
+Your appointment has been successfully confirmed.
+
+📅 Date: ${successBooking.bookingDate}
+⏰ Time: ${successBooking.startTime}
+💇 Services: ${successBooking.serviceName}
+💰 Amount: ₹${successBooking.price.replace("Rs. ", "")}
+🆔 Booking ID: ${successBooking.appointmentId}
+
+Thank you for choosing Dhanvika Beauty Parlour.
+Beauty | Elegance | Confidence`;
+                        const targetWhatsApp = successBooking.invoiceWhatsApp || "";
+                        const formattedWhatsApp = `91${targetWhatsApp}`;
+                        const whatsappUrl = `https://wa.me/${formattedWhatsApp}?text=${encodeURIComponent(message)}`;
+                        window.location.href = whatsappUrl;
+                      }}
+                      className="mt-1 text-[10px] bg-emerald-600 text-white px-2 py-1 rounded font-bold hover:bg-emerald-700 transition"
+                    >
+                      Open WhatsApp Manually
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-3 rounded-xl bg-white/80 p-3 text-[11px] font-mono space-y-1.5 border border-emerald-100">
                 <div><strong>Booking ID:</strong> {successBooking.appointmentId}</div>
                 <div><strong>Services:</strong> {successBooking.serviceName}</div>
                 <div><strong>Date:</strong> {successBooking.bookingDate}</div>
                 <div><strong>Time:</strong> {successBooking.startTime} - {successBooking.endTime}</div>
                 <div><strong>Total Price:</strong> {successBooking.price}</div>
+                {pdfUrl && (
+                  <div className="pt-2 mt-2 border-t border-dashed border-emerald-200 text-xs font-sans">
+                    <strong>PDF Receipt: </strong>
+                    <a
+                      href={pdfUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-emerald-700 underline font-bold break-all hover:text-emerald-900"
+                    >
+                      Download Invoice
+                    </a>
+                  </div>
+                )}
               </div>
             </div>
           )}
